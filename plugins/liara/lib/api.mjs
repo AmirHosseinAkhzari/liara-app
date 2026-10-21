@@ -1,5 +1,8 @@
 // Small HTTP client for every Liara API (see docs/api in this repo).
-import { resolveAuth } from './config.mjs';
+import { authCandidates } from './config.mjs';
+
+// Tokens Liara answered 401 for, so later calls skip them.
+const rejected = new Set();
 
 export const BASE_URLS = {
   paas: 'https://api.liara.ir',
@@ -24,15 +27,30 @@ export class LiaraError extends Error {
 }
 
 export function createClient({ cwd = process.cwd(), token, teamID } = {}) {
-  const auth = token ? { token, teamID, source: 'argument' } : resolveAuth(cwd);
+  const candidates = token ? [{ token, teamID, source: 'argument' }] : authCandidates(cwd);
+  const usable = () => candidates.filter((c) => !rejected.has(c.token));
 
-  async function request(service, method, path, { body, query, form, raw, timeoutMs = 120_000 } = {}) {
-    if (!auth.token) {
-      throw new LiaraError(
-        'No Liara API token found. Set LIARA_API_TOKEN (Liara Console → Account → API), put it in the project .env, or run `liara login`.',
-        { status: 0 },
-      );
+  async function request(service, method, path, opts = {}) {
+    for (;;) {
+      const auth = usable()[0];
+      if (!auth) {
+        throw new LiaraError(
+          candidates.length
+            ? `Liara rejected every saved token (${candidates.map((c) => c.source).join(', ')}). Log in again with the login tool (opens the browser), or set a new LIARA_API_TOKEN.`
+            : 'Not logged in to Liara. Use the login tool (opens the browser, like `liara login`), or set LIARA_API_TOKEN.',
+          { status: 401 },
+        );
+      }
+      try {
+        return await send(auth, service, method, path, opts);
+      } catch (err) {
+        if (err.status !== 401) throw err;
+        rejected.add(auth.token);
+      }
     }
+  }
+
+  async function send(auth, service, method, path, { body, query, form, raw, timeoutMs = 120_000 } = {}) {
     if (!BASE_URLS[service]) throw new LiaraError(`Unknown Liara service "${service}". Use one of: ${Object.keys(BASE_URLS).join(', ')}`);
     // LIARA_API_MOCK points every service at one local server (tests only).
     const base = process.env.LIARA_API_MOCK ? `${process.env.LIARA_API_MOCK}/${service}` : BASE_URLS[service];
@@ -70,12 +88,7 @@ export function createClient({ cwd = process.cwd(), token, teamID } = {}) {
       // keep text
     }
     if (!res.ok) {
-      if (res.status === 401) {
-        throw new LiaraError(
-          `Liara rejected the API token (401) from ${auth.source}. It is expired, revoked or mistyped. Create a new one in Liara Console → Account → API and set LIARA_API_TOKEN (or run \`liara login\`).`,
-          { status: 401, body: data, method, url: url.pathname },
-        );
-      }
+      if (res.status === 401) throw new LiaraError(`token from ${auth.source} rejected`, { status: 401, body: data, method, url: url.pathname });
       const detail = typeof data === 'object' && data ? data.message || data.error || JSON.stringify(data) : text;
       throw new LiaraError(`${method} ${url.pathname} → ${res.status}: ${String(detail).slice(0, 500)}`, {
         status: res.status,
@@ -88,7 +101,10 @@ export function createClient({ cwd = process.cwd(), token, teamID } = {}) {
   }
 
   const api = {
-    auth: { source: auth.source, teamID: auth.teamID, hasToken: Boolean(auth.token) },
+    get auth() {
+      const a = usable()[0];
+      return { source: a?.source || null, teamID: a?.teamID, hasToken: Boolean(a), account: a?.account };
+    },
     request,
     get: (s, p, o) => request(s, 'GET', p, o),
     post: (s, p, body, o) => request(s, 'POST', p, { ...o, body }),

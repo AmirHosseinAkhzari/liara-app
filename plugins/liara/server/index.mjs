@@ -3,7 +3,7 @@
 import readline from 'node:readline';
 import { TOOLS, callTool } from '../lib/tools.mjs';
 
-const SERVER = { name: 'liara', version: '0.1.0' };
+const SERVER = { name: 'liara', version: '0.2.0' };
 const SUPPORTED = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
 const send = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
@@ -21,7 +21,7 @@ async function handle(msg) {
         protocolVersion: SUPPORTED.includes(asked) ? asked : SUPPORTED[0],
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER,
-        instructions: 'Liara cloud tools: scan a project, deploy it, and connect Liara databases, object storage, mail, DNS and AI. Start with whoami and scan_project.',
+        instructions: 'Liara cloud tools: scan a project, deploy it, and connect Liara databases, object storage, mail, DNS and AI. Start with whoami; if not logged in, call login (opens the browser). Then scan_project.',
       });
     }
     case 'ping':

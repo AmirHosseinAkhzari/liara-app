@@ -5,15 +5,14 @@ description: Deploy a project to Liara (Iranian cloud PaaS) end to end. Detects 
 
 # Deploy to Liara
 
-You have the `liara` MCP tools (whoami, scan_project, list_resources, plans, create_app, connect_database, connect_storage, connect_mail, connect_dns, connect_ai, migrate_database, migrate_storage, set_envs, get_envs, deploy, release_status, app_logs, app_action, api).
+You have the `liara` MCP tools (login, accounts, logout, whoami, scan_project, list_resources, plans, create_app, connect_database, connect_storage, connect_mail, connect_dns, connect_ai, migrate_database, migrate_storage, set_envs, get_envs, deploy, release_status, app_logs, app_action, api).
 Secrets stay inside the tools: never print, echo or `cat` env files or tokens, and never pass secret values through `set_envs.vars` — use `fromEnvFile` + `keys`.
 
 Keep the user informed with short updates. Ask questions with AskUserQuestion, batched (several questions in one call), recommended option first.
 
 ## 1. Preflight
 
-1. `whoami`. On "No Liara API token" or 401, stop and tell the user:
-   create a token in Liara Console → Account → API, then either `export LIARA_API_TOKEN=...` before starting Claude Code, add `LIARA_API_TOKEN=...` to the project `.env` (gitignored), or run `liara login` (Liara CLI). For team resources also set `LIARA_TEAM_ID`.
+1. `whoami`. If it says not logged in, or every token was rejected: say "Opening the Liara login page in your browser — sign in there and come back", call `login`, and call it again while it returns `waiting: true` (show `loginUrl` if the browser didn't open). Then `whoami` again. Never ask for a token in chat. For team resources the user can set `LIARA_TEAM_ID`; for several accounts use `accounts`.
 2. `scan_project` with the project path. If `liara.json` names an app that exists (`list_resources` → apps), pass `app` so its current Liara env vars count as production.
 3. `list_resources` once, to reuse existing apps/databases/buckets/zones/workspaces instead of creating duplicates.
 

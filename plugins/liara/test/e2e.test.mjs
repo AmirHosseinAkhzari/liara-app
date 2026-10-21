@@ -15,6 +15,7 @@ before(async () => {
   mock = await startMock();
   process.env.LIARA_API_MOCK = mock.url;
   process.env.LIARA_API_TOKEN = 'test-token';
+  process.env.LIARA_AUTH_FILE = path.join(os.tmpdir(), 'liara-e2e-no-auth.json');
   ({ callTool } = await import('../lib/tools.mjs'));
   // copy the fixture so liara.json writes don't touch the repo
   workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'liara-e2e-'));
@@ -126,5 +127,5 @@ test('laravel gets DB_* style variables', async () => {
 test('bad token gives a clear message', async () => {
   const { createClient } = await import('../lib/api.mjs');
   const api = createClient({ token: 'wrong' });
-  await assert.rejects(api.get('account', '/v1/me'), /rejected the API token/);
+  await assert.rejects(api.get('account', '/v1/me'), /rejected every saved token \(argument\)/);
 });

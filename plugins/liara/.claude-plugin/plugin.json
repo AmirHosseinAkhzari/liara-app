@@ -1,6 +1,6 @@
 {
   "name": "liara",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Auto-deploy any project to Liara: detects the language, framework and port, finds the database, S3 storage, email, DNS and AI services it uses, connects Liara equivalents automatically, and asks before moving production services (with full data transfer).",
   "author": {
     "name": "AmirHossein"

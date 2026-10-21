@@ -34,13 +34,15 @@ For development, load it directly: `claude --plugin-dir ./plugins/liara`.
 
 Requires **Node.js 20+**. Data transfer needs `pg_dump`/`psql`, `mysqldump`/`mysql`, `mongodump`/`mongorestore` or Docker; bucket transfer needs `rclone` or Docker.
 
-## Liara token
+## Log in
 
-Create an API token in Liara Console → Account → API. The plugin looks for it in this order:
+Run `/liara:login` (or just start a deploy). Your browser opens the Liara login page; sign in and come back to Claude — that's it. It's the same browser login as `liara login`, saved in `~/.liara-auth.json`, so the plugin and the Liara CLI share one login. The token never appears in the chat.
 
-1. `LIARA_API_TOKEN` environment variable (set before starting Claude Code)
+Other ways, checked in this order (a rejected token is skipped automatically):
+
+1. `LIARA_API_TOKEN` environment variable
 2. `LIARA_API_TOKEN` in the project's `.env.liara`, `.env.local` or `.env` (keep it gitignored)
-3. the Liara CLI login (`liara login` → `~/.liara-auth.json`)
+3. the browser login (`/liara:login` or `liara login`)
 
 Set `LIARA_TEAM_ID` to work on a team's resources. `LIARA_S3_ENDPOINT` overrides the object storage endpoint (default `https://storage.c2.liara.space`).
 
@@ -48,6 +50,7 @@ Set `LIARA_TEAM_ID` to work on a team's resources. `LIARA_S3_ENDPOINT` overrides
 
 | Command | What it does |
 |---|---|
+| `/liara:login [account]` | Browser login (or switch saved account) |
 | `/liara:deploy [app] [path]` | Full flow: scan → connect services → deploy |
 | `/liara:scan [path]` | Report only, changes nothing |
 | `/liara:connect <database\|storage\|mail\|dns\|ai> [app]` | Connect one service to an existing app |
@@ -56,7 +59,7 @@ Set `LIARA_TEAM_ID` to work on a team's resources. `LIARA_S3_ENDPOINT` overrides
 
 ## MCP tools
 
-`whoami`, `scan_project`, `list_resources`, `plans`, `create_app`, `deploy`, `release_status`, `app_logs`, `app_action`, `get_envs`, `set_envs`, `connect_database`, `connect_storage`, `connect_mail`, `connect_dns`, `connect_ai`, `migrate_database`, `migrate_storage`, `api` (any endpoint from `docs/api`).
+`login`, `accounts`, `logout`, `whoami`, `scan_project`, `list_resources`, `plans`, `create_app`, `deploy`, `release_status`, `app_logs`, `app_action`, `get_envs`, `set_envs`, `connect_database`, `connect_storage`, `connect_mail`, `connect_dns`, `connect_ai`, `migrate_database`, `migrate_storage`, `api` (any endpoint from `docs/api`).
 
 Run any tool from a shell:
 

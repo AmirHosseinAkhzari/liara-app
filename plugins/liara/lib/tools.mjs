@@ -4,6 +4,7 @@ import { detectProject, summarize } from './detect.mjs';
 import { deploy, releaseStatus, appLogs, getPlans, getApp, createApp, writeLiaraJson } from './deploy.mjs';
 import { getEnvs, setEnvs, connectDatabase, connectStorage, connectMail, connectDns, connectAi } from './services.mjs';
 import { migrateDatabase, migrateStorage } from './migrate.mjs';
+import { browserLogin, logout, useAccount, readAuthFile, AUTH_FILE } from './login.mjs';
 import path from 'node:path';
 
 const str = (description, extra = {}) => ({ type: 'string', description, ...extra });
@@ -17,8 +18,46 @@ const ENV_KEYS = strArr('Env var names the app reads for this service (from scan
 
 export const TOOLS = [
   {
+    name: 'login',
+    description: 'Log in to Liara in the browser (same as `liara login`): opens the Liara console login page, the user signs in, and the token comes back to this computer and is saved to ~/.liara-auth.json (shared with the Liara CLI). The token is never shown. If it returns waiting: true, call it again to keep waiting.',
+    inputSchema: { type: 'object', properties: { wait: num('Seconds to wait for the user to finish signing in (default 120).') } },
+    async handler(args) {
+      const res = await browserLogin({ wait: args.wait ?? 120 });
+      if (!res.loggedIn) return res;
+      const me = await createClient().get('account', '/v1/me').catch((err) => ({ error: err.message }));
+      return {
+        loggedIn: true,
+        account: res.current,
+        email: me.user?.email,
+        fullname: me.user?.fullname,
+        savedAccounts: res.accounts,
+        savedTo: res.savedTo,
+        check: me.error ? `Saved, but the check call failed: ${me.error}` : 'Token works.',
+      };
+    },
+  },
+  {
+    name: 'accounts',
+    description: 'List Liara accounts saved by browser login, or switch the current one. Never shows tokens.',
+    inputSchema: { type: 'object', properties: { use: str('Account name to make current.') } },
+    async handler(args) {
+      if (args.use) useAccount(args.use);
+      const conf = readAuthFile();
+      return {
+        file: AUTH_FILE,
+        accounts: Object.entries(conf.accounts).map(([name, a]) => ({ name, email: a.email, current: Boolean(a.current) })),
+      };
+    },
+  },
+  {
+    name: 'logout',
+    description: 'Remove a saved Liara account (default: the current one) from ~/.liara-auth.json. This also logs the Liara CLI out of it. Ask the user first.',
+    inputSchema: { type: 'object', properties: { account: str('Account name (default: current).') } },
+    handler: (args) => logout(args.account),
+  },
+  {
     name: 'whoami',
-    description: 'Check the Liara API token and show which account/team it belongs to. Call this first.',
+    description: 'Check the Liara login and show which account/team it belongs to. Call this first; if it says not logged in or rejected, call login.',
     inputSchema: { type: 'object', properties: {} },
     async handler(_, api) {
       const me = await api.get('account', '/v1/me');
