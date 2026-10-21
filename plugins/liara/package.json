@@ -1,0 +1,18 @@
+{
+  "name": "claude-plugin-liara",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code plugin: auto-deploy to Liara and connect its database, storage, mail, DNS and AI services.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "liara-tool": "bin/liara-tool.mjs"
+  },
+  "scripts": {
+    "test": "node --test --test-timeout=60000 test/detect.test.mjs test/e2e.test.mjs",
+    "mcp": "node server/index.mjs"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,18 @@
+{
+  "name": "liara-tools",
+  "owner": {
+    "name": "AmirHossein"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for the Liara cloud platform."
+  },
+  "plugins": [
+    {
+      "name": "liara",
+      "source": "./plugins/liara",
+      "description": "Auto-deploy any project to Liara and connect Liara databases, object storage, mail, DNS and AI.",
+      "version": "0.1.0",
+      "category": "deployment"
+    }
+  ]
+}

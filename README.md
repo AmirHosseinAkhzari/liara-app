@@ -130,3 +130,15 @@ python3 scripts/generate_docs.py
 - Database Inspector and File Browser have per-resource hostnames assigned by Liara; the spec only shows a placeholder.
 - Two paths look like typos in Liara's spec but are kept as published: Object Storage download is `/api/v1/buckets/{bucket}/download/${object}` (stray `$`), and Mail's delete inbound rule uses `/api/v1/mail/…` (singular) while every other Mail path uses `/api/v1/mails/…`. Test before relying on them.
 - The release `type` field is the app platform (e.g. `node`, `docker`, `laravel`); the spec gives no list of allowed values.
+
+## Claude Code plugin: auto-deploy to Liara
+
+[`plugins/liara/`](plugins/liara/README.md) is a Claude Code plugin built on these docs. It scans a project (language, framework, port, database, S3, email, DNS, AI, other APIs), connects Liara equivalents automatically, asks before moving production services and transfers their data, then deploys.
+
+```bash
+claude plugin marketplace add ./
+```
+
+```bash
+claude plugin install liara@liara-tools
+```
