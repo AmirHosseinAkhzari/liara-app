@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Reads a project with AI and prints what it needs on Liara.
+# Usage: ./liara-analyze <project-folder> [--json] [--model <id>] [--dry-run] [--brief]
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec dart run "$here/tools/liara_analyzer/bin/liara_analyze.dart" "$@"
