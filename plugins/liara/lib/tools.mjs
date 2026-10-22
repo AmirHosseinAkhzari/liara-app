@@ -355,7 +355,7 @@ export const TOOLS = [
   },
   {
     name: 'api',
-    description: 'Call any Liara API endpoint directly (see docs/api in the plugin repo). Use for anything the other tools do not cover. Responses are not masked.',
+    description: 'Call any Liara API endpoint directly (reference: https://developers.liara.ir, endpoint list in https://developers.liara.ir/llms.txt). Use for anything the other tools do not cover. Responses are not masked.',
     inputSchema: {
       type: 'object',
       required: ['service', 'method', 'path'],

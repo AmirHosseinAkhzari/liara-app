@@ -1,5 +1,0 @@
-{
-  "name": "acme/store",
-  "require": { "php": "^8.3", "laravel/framework": "^11.31", "predis/predis": "^2.3" },
-  "scripts": { "post-autoload-dump": ["@php artisan package:discover --ansi"] }
-}

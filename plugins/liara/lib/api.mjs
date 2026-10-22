@@ -1,4 +1,4 @@
-// Small HTTP client for every Liara API (see docs/api in this repo).
+// Small HTTP client for every Liara API (reference: https://developers.liara.ir).
 import { authCandidates } from './config.mjs';
 import { readAuthFile } from './login.mjs';
 

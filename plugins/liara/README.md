@@ -61,7 +61,7 @@ Set `LIARA_TEAM_ID` to work on a team's resources. `LIARA_S3_ENDPOINT` overrides
 
 ## MCP tools
 
-`login`, `accounts`, `logout`, `whoami`, `scan_project`, `list_resources`, `plans`, `create_app`, `deploy`, `release_status`, `app_logs`, `app_action`, `get_envs`, `set_envs`, `connect_database`, `connect_storage`, `connect_mail`, `connect_dns`, `connect_ai`, `migrate_database`, `migrate_storage`, `api` (any endpoint from `docs/api`).
+`login`, `accounts`, `logout`, `whoami`, `scan_project`, `list_resources`, `plans`, `create_app`, `deploy`, `release_status`, `app_logs`, `app_action`, `get_envs`, `set_envs`, `connect_database`, `connect_storage`, `connect_mail`, `connect_dns`, `connect_ai`, `migrate_database`, `migrate_storage`, `api` (any endpoint from [developers.liara.ir](https://developers.liara.ir); local copy in [docs/api](../../docs/api/README.md)).
 
 Run any tool from a shell:
 
