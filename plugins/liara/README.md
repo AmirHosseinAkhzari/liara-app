@@ -27,7 +27,7 @@ A Liara cloud assistant inside Claude. Say **"deploy this to Liara"** (or run `/
 - **Changes** (env vars, deploys, restarts, DNS, data copies) and **paid resources** (apps, databases, buckets, mail servers, VPS) show a confirmation dialog first: what, which account and resource, why, the effect, the **live monthly cost**, what data is used, and what happens next. Decline changes nothing.
 - **One approval for a whole deploy**: `approve_plan` lists every step with its price; only those exact steps (same plan and bundle) then run without asking again, for 2 hours.
 - **Deletes** (apps, VPS, raw API DELETE) always ask on their own and need the name typed.
-- If the client can't show dialogs, the tool returns `confirmationRequired` with a one-time token bound to the exact request, so Claude has to ask you in chat first.
+- If the client can't show dialogs, the tool returns `confirmationRequired` with a one-time token bound to the exact request, so Claude has to ask you in chat first. This includes clients that say they show dialogs but answer them by themselves: the Claude desktop app declines every MCP dialog within a second without showing it. A "no" faster than a person could click, or a dialog closed without a choice, is treated as not shown, and that session confirms in chat from then on. A real "no" still stops everything. Set `LIARA_DIALOGS=off` to always confirm in chat.
 - Every change is written to `~/.liara-claude/audit.jsonl` (readable only by you) with names, never secret values.
 
 ## Install

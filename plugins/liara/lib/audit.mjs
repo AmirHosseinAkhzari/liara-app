@@ -33,7 +33,7 @@ function pick(result) {
   return out;
 }
 
-export function record({ tool, risk, account, target, consent, outcome, result, error, started, plan, bundle, kind }) {
+export function record({ tool, risk, account, target, consent, dialog, outcome, result, error, started, plan, bundle, kind }) {
   const entry = {
     time: new Date().toISOString(),
     tool,
@@ -41,6 +41,7 @@ export function record({ tool, risk, account, target, consent, outcome, result, 
     account,
     target: target || null,
     consent: consent || null,
+    ...(dialog ? { dialog } : {}), // the dialog's raw answer and how fast it came
     ...(plan ? { plan, bundle: bundle || undefined, kind: kind || undefined } : {}),
     outcome,
     ms: started ? Date.now() - started : undefined,

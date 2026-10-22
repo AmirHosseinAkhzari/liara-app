@@ -1059,7 +1059,7 @@ export async function callTool(name, args = {}, { cwd = process.cwd(), elicit = 
       }
       const gate = await requireConsent(ctx, name, args, consent);
       if (!gate.ok) {
-        record({ tool: name, risk: consent.risk, account, target: consent.target, outcome: gate.result.cancelled ? 'declined' : 'waiting for confirmation', result: gate.result, started });
+        record({ tool: name, risk: consent.risk, account, target: consent.target, dialog: ctx.dialog, outcome: gate.result.cancelled ? 'declined' : 'waiting for confirmation', result: gate.result, started });
         return gate.result;
       }
       via = gate.via;
@@ -1069,7 +1069,7 @@ export async function callTool(name, args = {}, { cwd = process.cwd(), elicit = 
   try {
     const result = await tool.handler(args, api, ctx);
     const billed = consent?.risk === 'billable' ? { plan: consent.plan, bundle: consent.bundle, kind: PRICE_KIND[name] } : {};
-    record({ tool: name, risk, account, target: consent?.target || args.app || args.bucket || args.domain || args.name, consent: via, outcome: result?.cancelled ? 'declined' : result?.success === false ? 'failed' : result?.created === false ? 'reused' : 'done', result, started, ...billed });
+    record({ tool: name, risk, account, target: consent?.target || args.app || args.bucket || args.domain || args.name, consent: via, dialog: ctx.dialog, outcome: result?.cancelled ? 'declined' : result?.success === false ? 'failed' : result?.created === false ? 'reused' : 'done', result, started, ...billed });
     return result;
   } catch (err) {
     // A resource "not found" is often just in another account: say where we looked.
@@ -1079,7 +1079,7 @@ export async function callTool(name, args = {}, { cwd = process.cwd(), elicit = 
         ? ` (looked in team ${where.name ? `"${where.name}" ` : ''}${where.id}). If it belongs to another team or the personal account, pass team or switch with the teams tool.`
         : ' (looked in the personal account). If it belongs to a team, pass team or switch with the teams tool.';
     }
-    record({ tool: name, risk, account, target: consent?.target || args.app, consent: via, outcome: 'error', error: err.message, started });
+    record({ tool: name, risk, account, target: consent?.target || args.app, consent: via, dialog: ctx.dialog, outcome: 'error', error: err.message, started });
     throw err;
   }
 }

@@ -3,7 +3,12 @@
 // 1. A plan approved with approve_plan covers the operations it lists (one dialog for a
 //    whole deploy); a call outside the plan, or with a different plan/bundle, asks again.
 // 2. Otherwise the MCP server shows a confirmation dialog (MCP elicitation) when the
-//    client supports it: Accept continues, Decline/Cancel changes nothing.
+//    client supports it: Accept continues, Decline changes nothing.
+//    Some clients say they support dialogs but never show them: the Claude desktop app
+//    answers every one with Decline by itself, within a second. So a Decline faster than
+//    a person could read the dialog, or a Cancel (closed without a choice), counts as
+//    "not shown" and the user is asked in chat (3). After a too-fast answer, this server
+//    stops trying dialogs.
 // 3. Without a dialog, the tool returns confirmationRequired with a one-time token bound
 //    to these exact arguments; Claude asks in chat and calls again with confirmToken.
 // Deletes always need the resource name typed (in the dialog, or as confirmName in chat).
@@ -18,6 +23,14 @@ export const RISK_LABEL = {
 };
 
 const TTL = 2 * 60 * 60_000;
+// An answer other than Accept that arrives faster than this came from the client, not a person.
+const minHumanMs = () => {
+  const n = Number(process.env.LIARA_DIALOG_MIN_MS ?? 1500);
+  return Number.isFinite(n) ? n : 1500;
+};
+const dialogsAllowed = () => process.env.LIARA_DIALOGS !== 'off';
+let dialogsShown = dialogsAllowed(); // false once the client answered a dialog without showing it
+export const dialogsWork = () => dialogsShown;
 const approvals = new Map(); // opKey → { planId, title, expires }
 const tokens = new Map(); // token → { hash, expires }
 
@@ -45,6 +58,7 @@ export function planApprovalFor(op) {
 export function resetConsent() {
   approvals.clear();
   tokens.clear();
+  dialogsShown = dialogsAllowed();
 }
 
 function issueToken(tool, args) {
@@ -98,22 +112,38 @@ export async function requireConsent(ctx, tool, args, c) {
     return { ok: true, via: 'confirmed in chat' };
   }
 
-  if (ctx?.elicit) {
+  let notShown = null;
+  if (ctx?.elicit && dialogsShown) {
     const requestedSchema = c.typedConfirm
       ? { type: 'object', properties: { confirm: { type: 'string', title: `Type ${c.typedConfirm} to confirm` } }, required: ['confirm'] }
       : { type: 'object', properties: {} };
     let res = null;
+    const asked = Date.now();
     try {
       res = await ctx.elicit({ message: consentText(c), requestedSchema });
     } catch (err) {
       ctx.elicitError = err.message; // fall back to chat below
     }
+    const ms = Date.now() - asked;
     if (res) {
-      if (res.action === 'accept' && (!c.typedConfirm || String(res.content?.confirm || '').trim() === c.typedConfirm)) {
-        return { ok: true, via: 'approved in dialog' };
+      ctx.dialog = { action: res.action, ms };
+      if (res.action === 'accept') {
+        if (!c.typedConfirm || String(res.content?.confirm || '').trim() === c.typedConfirm) return { ok: true, via: 'approved in dialog' };
+        return { ok: false, result: { cancelled: true, message: `The typed name did not match "${c.typedConfirm}". Nothing was changed.` } };
       }
-      const why = res.action === 'accept' ? `The typed name did not match "${c.typedConfirm}".` : 'The user did not approve this.';
-      return { ok: false, result: { cancelled: true, message: `${why} Nothing was changed.` } };
+      const tooFast = ms < minHumanMs();
+      if (res.action === 'decline' && !tooFast) {
+        return { ok: false, result: { cancelled: true, message: 'The user did not approve this. Nothing was changed.' } };
+      }
+      // Cancel, or a Decline no person could have given this fast: ask in chat instead.
+      if (tooFast) {
+        dialogsShown = false;
+        process.stderr.write(`[liara-mcp] the client answered a confirmation dialog with "${res.action}" in ${ms} ms, without showing it; asking in chat from now on\n`);
+      }
+      ctx.dialog.shown = !tooFast;
+      notShown = tooFast
+        ? 'This app could not show the Liara confirmation dialog (it answered by itself, without showing it to the user), so nothing was approved or declined yet.'
+        : 'The confirmation dialog was closed without a choice, so nothing was approved or declined yet.';
     }
   }
 
@@ -122,6 +152,7 @@ export async function requireConsent(ctx, tool, args, c) {
     result: {
       confirmationRequired: true,
       nothingChangedYet: true,
+      ...(notShown ? { dialogNotAnswered: notShown } : {}),
       confirmToken: issueToken(tool, args),
       consent: { ...c, riskLabel: RISK_LABEL[c.risk] },
       message: consentText(c),

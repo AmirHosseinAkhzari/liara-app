@@ -157,9 +157,81 @@ test('deleting something that does not exist asks nothing and says not found', a
   assert.equal(u.seen.length, 0);
 });
 
+// A client that says it shows dialogs but answers them itself, at once (the Claude
+// desktop app declines every MCP dialog this way, without showing it).
+test('a dialog the app declines by itself falls back to chat, and later approvals skip dialogs', async () => {
+  process.env.LIARA_DIALOG_MIN_MS = '400';
+  try {
+    const app = user('decline');
+    const args = { app: 'desk', platform: 'node', planID: 'small-g2' };
+    const first = await callTool('create_app', args, { elicit: app.elicit });
+    assert.equal(first.cancelled, undefined, 'not reported as the user saying no');
+    assert.equal(first.confirmationRequired, true);
+    assert.match(first.dialogNotAnswered, /could not show the Liara confirmation dialog/);
+    assert.equal(mock.state.projects.desk, undefined, 'nothing created yet');
+    const last = JSON.parse(fs.readFileSync(AUDIT_FILE, 'utf8').trim().split('\n').at(-1));
+    assert.equal(last.outcome, 'waiting for confirmation');
+    assert.deepEqual({ action: last.dialog.action, shown: last.dialog.shown }, { action: 'decline', shown: false });
+
+    // The user clicks Allow in chat.
+    const ok = await callTool('create_app', { ...args, confirmToken: first.confirmToken }, { elicit: app.elicit });
+    assert.equal(ok.created, true);
+
+    // From now on this session asks in chat straight away.
+    const next = await callTool('set_envs', { app: 'desk', vars: { NODE_ENV: 'production' } }, { elicit: app.elicit });
+    assert.equal(next.confirmationRequired, true);
+    assert.equal(app.seen.length, 1, 'only one dialog was ever sent');
+  } finally {
+    process.env.LIARA_DIALOG_MIN_MS = '0';
+  }
+});
+
+test('a person who declines still stops everything; closing the dialog asks in chat', async () => {
+  process.env.LIARA_DIALOG_MIN_MS = '100';
+  const person = (action) => {
+    const seen = [];
+    return { seen, elicit: async (params) => { seen.push(params); await new Promise((r) => setTimeout(r, 150)); return { action }; } };
+  };
+  try {
+    const no = person('decline');
+    const r = await callTool('create_app', { app: 'said-no', platform: 'node', planID: 'small-g2' }, { elicit: no.elicit });
+    assert.equal(r.cancelled, true);
+    assert.match(r.message, /did not approve.*Nothing was changed/);
+    assert.equal(r.confirmToken, undefined, 'no way around a real no');
+    assert.equal(mock.state.projects['said-no'], undefined);
+
+    const closed = person('cancel');
+    const c = await callTool('create_app', { app: 'closed', platform: 'node', planID: 'small-g2' }, { elicit: closed.elicit });
+    assert.equal(c.confirmationRequired, true);
+    assert.match(c.dialogNotAnswered, /closed without a choice/);
+    assert.equal(mock.state.projects.closed, undefined);
+
+    // Dialogs keep working after a person closed one.
+    const yes = person('accept');
+    assert.equal((await callTool('create_app', { app: 'closed', platform: 'node', planID: 'small-g2' }, { elicit: yes.elicit })).created, true);
+    assert.equal(yes.seen.length, 1);
+  } finally {
+    process.env.LIARA_DIALOG_MIN_MS = '0';
+  }
+});
+
+test('LIARA_DIALOGS=off always asks in chat', async () => {
+  process.env.LIARA_DIALOGS = 'off';
+  try {
+    resetConsent();
+    const u = user('accept');
+    const r = await callTool('create_app', { app: 'chat-only', platform: 'node', planID: 'small-g2' }, { elicit: u.elicit });
+    assert.equal(r.confirmationRequired, true);
+    assert.equal(u.seen.length, 0);
+  } finally {
+    delete process.env.LIARA_DIALOGS;
+    resetConsent();
+  }
+});
+
 // The real server, talking to a fake MCP client that supports dialogs.
-function startServer(capabilities) {
-  const child = spawn(process.execPath, [path.join(here, '..', 'server', 'index.mjs')], { env: { ...process.env }, stdio: ['pipe', 'pipe', 'pipe'] });
+function startServer(capabilities, env = {}) {
+  const child = spawn(process.execPath, [path.join(here, '..', 'server', 'index.mjs')], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
   const lines = readline.createInterface({ input: child.stdout });
   const queue = []; const waiters = [];
   lines.on('line', (l) => { const m = JSON.parse(l); const w = waiters.shift(); if (w) w(m); else queue.push(m); });
@@ -201,6 +273,38 @@ test('MCP server: without dialog support it returns confirmationRequired', async
     const plans = list.result.tools.find((t) => t.name === 'plans');
     assert.equal(plans.annotations.readOnlyHint, true);
     assert.ok(list.result.tools.find((t) => t.name === 'create_app').inputSchema.properties.confirmToken);
+  } finally {
+    s.child.kill();
+  }
+});
+
+test('MCP server: a client that declines dialogs without showing them gets chat confirmation', async () => {
+  const s = startServer({ elicitation: {} }, { LIARA_DIALOG_MIN_MS: '1500' });
+  const call = (id, args) => s.write({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'create_app', arguments: args } });
+  const args = { app: 'from-desktop', platform: 'node', planID: 'small-g2' };
+  try {
+    await s.next();
+    call(2, args);
+    const ask = await s.next();
+    assert.equal(ask.method, 'elicitation/create');
+    s.write({ jsonrpc: '2.0', id: ask.id, result: { action: 'decline' } }); // what the desktop app sends, at once
+    const first = JSON.parse((await s.next()).result.content[0].text);
+    assert.equal(first.confirmationRequired, true);
+    assert.match(first.dialogNotAnswered, /could not show/);
+    assert.equal(mock.state.projects['from-desktop'], undefined);
+
+    // The next approval goes straight to chat: the reply comes back with no dialog first.
+    call(3, { ...args, app: 'from-desktop-2' });
+    const second = await s.next();
+    assert.equal(second.id, 3);
+    assert.equal(JSON.parse(second.result.content[0].text).confirmationRequired, true);
+
+    // The user clicked Allow in chat.
+    call(4, { ...args, confirmToken: first.confirmToken });
+    const done = await s.next();
+    assert.equal(done.id, 4);
+    assert.equal(JSON.parse(done.result.content[0].text).created, true);
+    assert.equal(mock.state.projects['from-desktop'].planID, 'small-g2');
   } finally {
     s.child.kill();
   }

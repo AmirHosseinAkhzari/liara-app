@@ -10,3 +10,6 @@ delete process.env.LIARA_API_TOKEN;
 delete process.env.LIARA_TOKEN;
 delete process.env.LIARA_TEAM_ID;
 process.env.LIARA_CLAUDE_HOME ||= path.join(dir, 'liara-claude');
+// Fake users in tests answer dialogs at once. Count that as a person; consent.test.mjs
+// raises this to test a client that answers dialogs without showing them.
+process.env.LIARA_DIALOG_MIN_MS ||= '0';

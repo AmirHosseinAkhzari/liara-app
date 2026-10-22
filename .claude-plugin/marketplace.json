@@ -11,7 +11,7 @@
       "name": "liara",
       "source": "./plugins/liara",
       "description": "Liara cloud assistant: analyze a project, deploy it with live prices and one approval, connect Liara databases, storage, mail, DNS and AI, verify with real checks, diagnose failures, manage VPS, check billing and Liara status, search the official docs, set up GitHub auto-deploy, and write a static HTML report.",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "category": "deployment"
     }
   ]
