@@ -63,12 +63,17 @@ export function isPlaceholder(value) {
 export function maskValue(value) {
   if (value === undefined || value === null || value === '') return '(empty)';
   const v = String(value);
-  // URLs: hide the password but keep host so the user can recognise it.
+  // URLs: hide credentials but keep the host so the user can recognise it.
   try {
     const u = new URL(v);
-    if (u.password) u.password = '****';
-    if (u.username && u.password) return u.toString();
-    if (u.protocol && u.host) return u.toString();
+    if (u.protocol && u.host) {
+      if (u.password) u.password = '****';
+      else if (u.username) u.username = '****'; // e.g. a Sentry DSN keeps its key in the user part
+      for (const k of [...u.searchParams.keys()]) {
+        if (/token|key|secret|pass|pwd|sig|auth|credential/i.test(k)) u.searchParams.set(k, '****');
+      }
+      return u.toString();
+    }
   } catch {
     // not a URL
   }

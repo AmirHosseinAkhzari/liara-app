@@ -155,7 +155,7 @@ export const TOOLS = [
   },
   {
     name: 'plans',
-    description: 'Available Liara plans (apps, bundles, databases, object storage, mail) and database versions. Use the IDs for planID / bundlePlanID / version.',
+    description: 'Available Liara plans with RAM/CPU/disk and monthly price in Toman, the feature bundles each plan needs (with prices), which plans need a private network, and database versions. Use the IDs for planID / bundlePlanID / version, and show the total monthly cost to the user before creating anything.',
     inputSchema: { type: 'object', properties: {} },
     handler: (_, api) => getPlans(api),
   },
@@ -170,8 +170,9 @@ export const TOOLS = [
         platform: str('Liara platform: node, nextjs, react, vue, angular, static, laravel, php, django, flask, python, go, netcore, docker. Default: detected.'),
         port: num('Port the app listens on. Default: detected.'),
         planID: str('Plan for a NEW app (see plans tool).'),
-        bundlePlanID: str('Bundle plan for a NEW app, if the account uses bundles.'),
-        network: str('Private network ID for a NEW app (optional).'),
+        bundlePlanID: str('Feature bundle for a NEW app, required when the plan lists bundles (see plans: bundles with prices).'),
+        network: str('Private network name or ID for a NEW app. g2 plans need one: the only existing network is used automatically.'),
+        createNetwork: str('Create a private network with this name for a NEW app when the account has none (ask the user first).'),
         create: bool('Create the app if it does not exist (default true).'),
         wait: num('Seconds to wait for the release to finish (default 240, 0 = do not wait).'),
         message: str('Release message.'),
@@ -201,16 +202,18 @@ export const TOOLS = [
         app: APP,
         platform: str('Liara platform (from scan_project).'),
         planID: str('App plan (see plans tool).'),
-        bundlePlanID: str('Bundle plan, if the account uses bundles.'),
-        network: str('Private network ID (optional).'),
+        bundlePlanID: str('Feature bundle, required when the plan lists bundles (see plans: bundles with prices).'),
+        network: str('Private network name or ID for a NEW app. g2 plans need one: the only existing network is used automatically.'),
+        createNetwork: str('Create a private network with this name for a NEW app when the account has none (ask the user first).'),
       },
     },
     async handler(args, api, ctx) {
       const account = describeContext(ctx.team, api);
       const existing = await getApp(api, args.app);
       if (existing) return { created: false, app: args.app, account, platform: existing.type, plan: existing.planID, status: existing.status };
-      const p = await createApp(api, args);
-      return { created: true, app: args.app, account, platform: p?.type || args.platform, plan: p?.planID || args.planID, url: `https://${args.app}.liara.run` };
+      const steps = [];
+      const p = await createApp(api, args, steps);
+      return { created: true, app: args.app, account, platform: p?.type || args.platform, plan: p?.planID || args.planID, bundle: args.bundlePlanID || null, steps, url: `https://${args.app}.liara.run` };
     },
   },
   {
@@ -275,8 +278,9 @@ export const TOOLS = [
             hostname: str('Unique database name, e.g. myapp-db.'),
             planID: str('Database plan (see plans tool).'),
             version: str('Engine version (see plans tool → databaseVersions).'),
-            bundlePlanID: str('Optional bundle plan.'),
-            network: str('Optional private network ID (same as the app).'),
+            bundlePlanID: str('Feature bundle, required when the database plan lists bundles (see plans).'),
+            network: str('Private network name or ID; must be the app\'s network. g2 plans use the only existing network automatically.'),
+            createNetwork: str('Create a private network with this name when the account has none (ask the user first).'),
             publicNetwork: bool('Expose to the internet (default false).'),
           },
         },

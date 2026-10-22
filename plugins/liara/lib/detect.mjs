@@ -15,7 +15,13 @@ const IGNORED_DIRS = new Set([
   'vendor', '__pycache__', '.venv', 'venv', 'env', '.tox', '.mypy_cache', '.pytest_cache', 'bin', 'obj',
   'target', '.idea', '.vscode', '.turbo', '.cache', '.vercel', '.netlify', 'storage', 'public/build',
   '.liara', 'tmp', 'logs',
+  // tests, fixtures and examples are not part of the deployed app
+  'test', 'tests', '__tests__', 'spec', 'e2e', 'cypress', 'fixtures', '__fixtures__', '__mocks__', 'testdata',
+  'examples', 'example',
 ]);
+const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py)$|(^|\/)test_[^/]*\.py$|(^|\/)conftest\.py$/;
+// Files that mark the root of a separate app.
+const PROJECT_MARKERS = ['package.json', 'requirements.txt', 'pyproject.toml', 'manage.py', 'go.mod', 'composer.json', 'Gemfile', 'Dockerfile'];
 const SOURCE_EXT = /\.(m?[jt]sx?|cjs|cts|mts|vue|svelte|astro|py|php|go|cs|rb|java|kt|rs|ex|exs|ya?ml|toml|json|prisma)$/i;
 const MAX_FILES = 4000;
 const MAX_FILE_BYTES = 400_000;
@@ -60,7 +66,7 @@ function walk(root) {
       const r = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) {
         if (!IGNORED_DIRS.has(e.name) && !IGNORED_DIRS.has(r) && !e.name.startsWith('.')) stack.push(r);
-      } else if (e.isFile() && SOURCE_EXT.test(e.name)) {
+      } else if (e.isFile() && SOURCE_EXT.test(e.name) && !TEST_FILE.test(r)) {
         files.push(r);
       }
     }
@@ -326,7 +332,22 @@ const ENV_REF_PATTERNS = [
   /GetEnvironmentVariable\(\s*"([A-Z_][A-Z0-9_]*)"/g,
   /ENV\[\s*['"]([A-Z_][A-Z0-9_]*)['"]\s*\]/g,
 ];
-const IGNORED_ENV_REFS = new Set(['NODE_ENV', 'PORT', 'HOST', 'HOSTNAME', 'PWD', 'HOME', 'PATH', 'CI', 'TZ', 'DEBUG', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL', 'npm_package_version', 'APP_ENV', 'ENV', 'ENVIRONMENT', 'LOG_LEVEL', 'NEXT_RUNTIME', 'DEV', 'PROD', 'MODE', 'SSR', 'BASE_URL']);
+// Settings of this plugin and the Liara CLI, not of the app.
+const TOOL_ENV_KEY = /^LIARA_(API_)?TOKEN$|^LIARA_(TEAM_ID|API_MOCK|AUTH_FILE|CONSOLE_URL|S3_ENDPOINT)$/;
+const IGNORED_ENV_REFS = new Set(['NODE_ENV', 'PORT', 'HOST', 'HOSTNAME', 'PWD', 'HOME', 'PATH', 'CI', 'TZ', 'DEBUG', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL', 'npm_package_version', 'APP_ENV', 'ENV', 'ENVIRONMENT', 'LOG_LEVEL', 'NEXT_RUNTIME', 'DEV', 'PROD', 'MODE', 'SSR', 'BASE_URL', 'NODE_TEST_CONTEXT']);
+
+// Real SQLite use: driver imports, connection URLs and framework settings.
+const SQLITE_USE = [
+  /['"`]sqlite3?:\/\/[^'"`\s]*['"`]/, // sqlite:///app.db
+  /['"`]file:[^'"`\s]*\.(?:db|sqlite3?)['"`]/, // Prisma / libsql file URLs
+  /provider\s*=\s*"sqlite"/, // schema.prisma
+  /['"]django\.db\.backends\.sqlite3['"]/,
+  /\bsqlite3\.connect\(|^\s*import\s+sqlite3\b/m, // Python
+  /(?:require\(\s*|from\s+)['"](?:better-)?sqlite3?['"]/, // JS imports
+  /(?:client|dialect)\s*:\s*['"](?:better-)?sqlite3?['"]/, // knex / sequelize
+  /"github\.com\/mattn\/go-sqlite3"|"gorm\.io\/driver\/sqlite"/, // Go imports
+  /['"]driver['"]\s*=>\s*['"]sqlite['"]|new\s+PDO\(\s*['"]sqlite:/, // PHP / Laravel
+];
 
 function scanCode(root, files) {
   const envRefs = new Map(); // key → first file
@@ -344,7 +365,7 @@ function scanCode(root, files) {
     const t = read(full);
     if (!t) continue;
     for (const re of ENV_REF_PATTERNS) {
-      for (const m of t.matchAll(re)) if (!IGNORED_ENV_REFS.has(m[1]) && !envRefs.has(m[1])) envRefs.set(m[1], f);
+      for (const m of t.matchAll(re)) if (!IGNORED_ENV_REFS.has(m[1]) && !TOOL_ENV_KEY.test(m[1]) && !envRefs.has(m[1])) envRefs.set(m[1], f);
     }
     if (f.endsWith('.prisma')) {
       const m = t.match(/datasource\s+\w+\s*\{[^}]*provider\s*=\s*"(\w+)"/s);
@@ -358,7 +379,7 @@ function scanCode(root, files) {
       for (const m of t.matchAll(/ENGINE['"]?\s*[:=]\s*['"]django\.db\.backends\.(\w+)['"]/g)) hints.djangoEngines.push(m[1]);
       if (/MEDIA_ROOT/.test(t) && !/storages\.backends\.s3/.test(t)) hints.localUploads.push(`${f} (MEDIA_ROOT)`);
     }
-    if (/\.sqlite3?\b|\.db['"]|sqlite:\/\//.test(t) && /\.(py|[jt]s|mjs|php|go|prisma)$/.test(f)) hints.sqliteFiles.push(f);
+    if (/\.(py|[cm]?[jt]s|php|go|prisma)$/.test(f) && SQLITE_USE.some((re) => re.test(t))) hints.sqliteFiles.push(f);
     if (/multer\(\s*\{\s*dest|diskStorage\(|\.mv\(|fs\.writeFile\([^)]*uploads/.test(t)) hints.localUploads.push(f);
     if (/baseURL\s*:\s*['"]https?:\/\//.test(t) && /openai/i.test(t)) hints.openaiBaseUrlInCode = true;
   }
@@ -443,6 +464,21 @@ const SECRET_KEY_RE = /(API_KEY|_SECRET|SECRET_KEY|_TOKEN|ACCESS_KEY|PRIVATE_KEY
 const APP_SECRET_RE = /^(APP_KEY|SECRET_KEY|DJANGO_SECRET_KEY|NEXTAUTH_SECRET|AUTH_SECRET|JWT_SECRET|JWT_.*|SESSION_SECRET|COOKIE_SECRET|ENCRYPTION_KEY|BETTER_AUTH_SECRET|PAYLOAD_SECRET)$/;
 
 // ---------- main ----------
+
+// Folders below the root that are apps of their own (a repo of several projects, a monorepo,
+// or a frontend folder next to a backend). Only the top-most one of a nested chain is listed.
+function findSubprojects(root, files) {
+  const dirs = new Set();
+  for (const f of files) {
+    for (let d = path.posix.dirname(f); d !== '.'; d = path.posix.dirname(d)) dirs.add(d);
+  }
+  const found = [];
+  for (const d of [...dirs].sort()) {
+    if (found.some((p) => d.startsWith(`${p}/`))) continue;
+    if (PROJECT_MARKERS.some((m) => fs.existsSync(path.join(root, d, m)))) found.push(d);
+  }
+  return found;
+}
 
 export async function detectProject(root, { liaraEnvs = null, checkDns = true } = {}) {
   root = path.resolve(root);
@@ -712,7 +748,7 @@ export async function detectProject(root, { liaraEnvs = null, checkDns = true } 
   const claimed = new Set(result.flatMap((s) => s.envKeys));
   const appSecrets = [];
   for (const key of allKeys) {
-    if (claimed.has(key)) continue;
+    if (claimed.has(key) || /^LIARA_/.test(key)) continue;
     if (APP_SECRET_RE.test(key)) { appSecrets.push(key); continue; }
     if (SECRET_KEY_RE.test(key) || /^(STRIPE|TWILIO|KAVENEGAR|ZARINPAL|IDPAY|PAYIR|NEXTPAY|SENTRY|CLERK|PUSHER|ALGOLIA|POSTHOG|GITHUB|GOOGLE|FACEBOOK|TELEGRAM|SLACK|DISCORD|MAPBOX|NESHAN|SMS|PAYMENT|MELIPAYAMAK|GHASEDAK)/.test(key)) {
       const name = key.split('_')[0];
@@ -725,13 +761,22 @@ export async function detectProject(root, { liaraEnvs = null, checkDns = true } 
 
   // 8) Env keys the code reads but no env file defines
   const defined = new Set(envFiles.filter((f) => f.kind !== 'example').flatMap((f) => Object.keys(f.vars)));
-  const missingEnvKeys = [...envRefs.keys()].filter((k) => !defined.has(k) && !/^(NEXT_PUBLIC_VERCEL|VERCEL_|npm_)/.test(k)).sort();
+  const missingEnvKeys = [...envRefs.keys()].filter((k) => !defined.has(k) && !/^(NEXT_PUBLIC_VERCEL|VERCEL_|npm_)/.test(k) && !TOOL_ENV_KEY.test(k)).sort();
 
   if (hints.sqliteFiles.length && !result.some((s) => s.engine === 'sqlite')) warnings.push(`SQLite references found in ${hints.sqliteFiles.slice(0, 3).join(', ')}.`);
   if (hints.localUploads.length) warnings.push(`App writes uploaded files to local disk (${[...new Set(hints.localUploads)].slice(0, 3).join(', ')}). On Liara use a disk (liara.json "disks") or Object Storage, or files vanish on redeploy.`);
   if (stack.platform === 'node' && stack.packageJson && !stack.build.scripts?.start) warnings.push('package.json has no "start" script. Liara runs `npm start` for the node platform.');
   if (exists(root, 'pnpm-workspace.yaml') || exists(root, 'turbo.json') || exists(root, 'nx.json') || exists(root, 'lerna.json')) warnings.push('This looks like a monorepo. Deploy each app folder separately (pass its folder as path).');
-  if (!stack.platform) warnings.push('Could not detect the platform. A Dockerfile will be needed (platform "docker").');
+  const subprojects = findSubprojects(root, files);
+  const rootIsProject = PROJECT_MARKERS.some((m) => exists(root, m));
+  if (!rootIsProject && subprojects.length > 1) {
+    warnings.unshift(`No app at the top of this folder, but ${subprojects.length} separate projects inside: ${subprojects.join(', ')}. This report mixes them; scan and deploy one at a time (pass its folder as path).`);
+  } else if (!rootIsProject && subprojects.length === 1) {
+    warnings.unshift(`The app is in ${subprojects[0]}/. Scan that folder (pass it as path) instead.`);
+  } else if (subprojects.length) {
+    warnings.push(`Also found separate projects inside: ${subprojects.join(', ')}. They were scanned together with the main app; if one deploys on its own, scan its folder separately.`);
+  }
+  if (!stack.platform && (rootIsProject || !subprojects.length)) warnings.push('Could not detect the platform. A Dockerfile will be needed (platform "docker").');
   if (envFiles.some((f) => f.kind !== 'example')) warnings.push('.env files are NOT uploaded with the source; their values must be set as Liara env vars (set_envs with fromEnvFile).');
 
   const name = (readJson(path.join(root, 'package.json'))?.name || path.basename(root))
@@ -749,6 +794,8 @@ export async function detectProject(root, { liaraEnvs = null, checkDns = true } 
     build: stack.build,
     hasDockerfile: stack.hasDockerfile,
     liaraJson: stack.liaraJson || null,
+    rootIsProject,
+    subprojects,
     currentHosting: hosting,
     envFiles: envFiles.map((f) => ({ file: f.file, environment: f.kind, keys: Object.keys(f.vars).length })),
     services: result,

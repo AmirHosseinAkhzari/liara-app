@@ -100,5 +100,6 @@ curl -X POST "https://api.liara.ir/v2/projects/my-app/releases" \
 - Some descriptions in Liara's specs are copy-pasted (e.g. "Change plan" says "create app that user owns"). The docs reproduce the specs as published.
 - Database Inspector and File Browser have per-resource hostnames assigned by Liara; the spec only shows a placeholder.
 - Two paths look like typos in Liara's spec but are kept as published: Object Storage download is `/api/v1/buckets/{bucket}/download/${object}` (stray `$`), and Mail's delete inbound rule uses `/api/v1/mail/…` (singular) while every other Mail path uses `/api/v1/mails/…`.
+- Storage access keys (`POST /api/v1/keys`, `PATCH /api/v1/keys/{key}`) take `buckets` as plain bucket names (`["my-bucket"]`), not the objects the spec shows. Responses list `keys[].buckets[]` as objects.
 - The release `type` field is the app platform (e.g. `node`, `docker`, `laravel`); the spec gives no list of allowed values.
 - Build logs (`/v2/releases/{id}/build-logs`) are used by the Liara CLI but not in the published spec.

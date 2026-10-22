@@ -6,6 +6,7 @@ export function startMock() {
   const state = {
     projects: {}, databases: {}, buckets: {}, keys: [], zones: {}, records: {}, mails: [], workspaces: [], aiKeys: [], domains: [],
     uploads: [], releases: {}, requests: [], calls: [],
+    networks: [{ _id: 'net1', name: 'test-net' }], createdProjects: [],
     // Teams the test user belongs to: owner of one, view-only in the other.
     teams: [
       { _id: 'aaaaaaaaaaaaaaaaaaaaaaa2', name: 'تیم ۲', role: { name: 'مالک', permissions: [{ name: 'manage', type: 'project' }, { name: 'create', type: 'project' }, { name: 'create', type: 'database' }] } },
@@ -47,7 +48,11 @@ export function startMock() {
       return send(200, {
         ...(t ? { team: { _id: t._id, isTeam: true, teamName: t.name, teamMemberRole: t.role } } : {}),
         user: { fullname: 'Test User', email: 't@example.com', isVerified: true, storage: { secretKey: 'should-not-leak' } },
-        plans: { projects: { 'small-g2': { available: true, CPU: 0.5, RAM: 512 }, old: { available: false } }, databases: { 'db-small': { available: true } }, objectStorage: { 'storage-20': {} }, mail: { 'mail-free': {} } },
+        plans: {
+          projects: { 'small-g2': { available: true, CPU: { amount: 0.5 }, RAM: { amount: 0.5 }, volume: 5, displayPrice: 475000 }, 'medium-g2': { available: true, CPU: { amount: 1 }, RAM: { amount: 1 }, volume: 10, price: 1000 }, old: { available: false } },
+          projectBundlePlans: { 'medium-g2': { free: { available: false, displayPrice: 0 }, basic: { available: true, displayPrice: 275000 }, pro: { available: true, displayPrice: 825000 } } },
+          databases: { 'db-small': { available: true } }, objectStorage: { 'storage-20': {} }, mail: { 'mail-free': {} },
+        },
         databaseVersions: { postgres: ['16', '17'] }, defaultDatabaseVersions: { postgres: '17' },
       });
     }
@@ -55,8 +60,16 @@ export function startMock() {
     if (service === 'paas') {
       if (m === 'GET' && p === '/v2/teams') return send(200, { totalTeams: state.teams.length, teams: state.teams.map((t) => ({ _id: t._id, name: t.name, color: 'blue' })) });
       if (m === 'GET' && p === '/v1/projects') return send(200, { projects: Object.values(state.projects).filter(mine) });
+      if (m === 'GET' && p === '/v1/networks') return send(200, { networks: state.networks });
+      if (m === 'POST' && p === '/v1/networks') {
+        if (!body.networkName) return send(400, { message: '"networkName" is required' });
+        state.networks.push({ _id: id('net'), name: body.networkName });
+        return send(201, {});
+      }
       if (m === 'POST' && p === '/v1/projects') {
         if (state.projects[body.name]) return send(409, { message: 'exists' });
+        if (/g2$/.test(body.planID) && !body.network) return send(400, { message: 'g2_plan_unavailable' });
+        state.createdProjects.push(body);
         state.projects[body.name] = { _id: id('p'), project_id: body.name, type: body.platform, planID: body.planID, status: 'ACTIVE', envs: [], scale: 1, team: teamID };
         return send(200, {});
       }
@@ -111,7 +124,7 @@ export function startMock() {
     if (service === 'dbaas') {
       if (m === 'POST' && p === '/v1/databases') {
         const dbid = id('db');
-        state.databases[dbid] = { _id: dbid, id: dbid, hostname: body.hostname, type: body.type, planID: body.planID, version: body.version, status: 'RUNNING', publicNetwork: false, node: { host: 'db-node.liara.ir' }, port: 31000, internalPort: 5432, root_password: 'p@ss/word', username: 'root', team: teamID };
+        state.databases[dbid] = { _id: dbid, id: dbid, hostname: body.hostname, type: body.type, planID: body.planID, version: body.version, status: 'RUNNING', publicNetwork: false, node: { host: 'db-node.liara.ir' }, port: 31000, internalPort: 5432, root_password: 'p@ss/word', username: 'root', team: teamID, network: body.network, bundlePlanID: body.bundlePlanID };
         return send(200, { databaseID: dbid });
       }
       if (m === 'GET' && p === '/v1/databases') return send(200, { databases: Object.values(state.databases).filter(mine) });
@@ -126,7 +139,10 @@ export function startMock() {
       if ((mm = p.match(/^\/api\/v1\/buckets\/([^/]+)$/)) && m === 'GET') return state.buckets[mm[1]] ? send(200, { bucket: state.buckets[mm[1]] }) : send(404, {});
       if (m === 'POST' && p === '/api/v1/buckets') { state.buckets[body.name] = { id: id('b'), name: body.name, plan: body.plan, permission: body.permission }; return send(201, { status: 'ok' }); }
       if (m === 'POST' && p === '/api/v1/keys') {
-        if (!body.buckets?.[0]?.id) return send(400, { message: 'bucket id required' });
+        // Like the live API: bucket names as plain strings.
+        if (typeof body.buckets?.[0] !== 'string') return send(400, { message: '"buckets[0]" must be a string' });
+        if (!state.buckets[body.buckets[0]]) return send(404, { message: 'bucket not found' });
+        if (state.failKeys) return send(403, { message: 'access key quota reached' });
         state.keys.push(body);
         return send(201, { status: 'ok', data: { accessKey: 'AKLIARA', secretKey: 'liara-secret-123' } });
       }

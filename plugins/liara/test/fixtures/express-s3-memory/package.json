@@ -1,0 +1,7 @@
+{
+  "name": "cafe-photos",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": { "start": "node index.js", "test": "node --test" },
+  "dependencies": { "@aws-sdk/client-s3": "^3.600.0", "express": "^4.21.0", "multer": "^1.4.5-lts.1", "pg": "^8.12.0" }
+}

@@ -4,16 +4,30 @@ import path from 'node:path';
 import dns from 'node:dns/promises';
 import { parseEnvFile, maskValue } from './envfiles.mjs';
 import { fillKeys, defaultKeys, databaseUrl, roleOf, SECRET_ROLES } from './envmap.mjs';
-import { getApp } from './deploy.mjs';
+import { getApp, checkBundle, resolveNetwork } from './deploy.mjs';
 import { S3_ENDPOINT } from './config.mjs';
 import { LiaraError } from './api.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function masked(kind, vars) {
+// A value carries credentials if it is a URL with a user/password or secret query
+// params (DATABASE_URL, REDIS_URL, SENTRY_DSN, …) or a key=value connection string
+// with a password (SQL Server style), whatever the variable is called.
+function hasCredentials(v) {
+  const s = String(v ?? '');
+  if (/(?:^|;)\s*(?:password|pwd)\s*=/i.test(s)) return true;
+  try {
+    const u = new URL(s);
+    return Boolean(u.host && (u.username || u.password || [...u.searchParams.keys()].some((k) => /token|key|secret|pass|pwd|sig|auth|credential/i.test(k))));
+  } catch {
+    return false;
+  }
+}
+
+export function masked(kind, vars) {
   return Object.fromEntries(Object.entries(vars).map(([k, v]) => {
     const role = kind ? roleOf(kind, k) : null;
-    const secret = (role && SECRET_ROLES.has(role)) || /(PASSWORD|SECRET|TOKEN|_KEY|PASS)$/.test(k);
+    const secret = (role && SECRET_ROLES.has(role)) || /(PASSWORD|SECRET|TOKEN|_KEY|PASS|PWD|DSN|CREDENTIALS)$/.test(k) || hasCredentials(v);
     return [k, secret ? maskValue(v) : v];
   }));
 }
@@ -112,8 +126,10 @@ export async function connectDatabase(api, args) {
     if (!c.type || !c.hostname || !c.planID) throw new Error('create needs type, hostname and planID (see the plans tool for planID and versions).');
     const body = { hostname: c.hostname, type: c.type, planID: c.planID, publicNetwork: Boolean(c.publicNetwork) };
     if (c.version) body.version = c.version;
-    if (c.bundlePlanID) body.bundlePlanID = c.bundlePlanID;
-    if (c.network) body.network = c.network;
+    const bundle = await checkBundle(api, { planID: c.planID, bundlePlanID: c.bundlePlanID, group: 'databaseBundlePlans' });
+    if (bundle) body.bundlePlanID = bundle;
+    const networkID = await resolveNetwork(api, { planID: c.planID, network: c.network, createNetwork: c.createNetwork }, steps);
+    if (networkID) body.network = networkID;
     if (c.type === 'mongodb') body.options = { standaloneReplicaSet: Boolean(c.replicaSet) };
     const res = await api.post('dbaas', '/v1/databases', body);
     steps.push(`created ${c.type} database "${c.hostname}"`);
@@ -163,12 +179,14 @@ export async function connectStorage(api, args) {
     b = await api.maybe(async () => (await api.get('storage', `/api/v1/buckets/${encodeURIComponent(bucket)}`)).bucket);
   }
 
-  // Access key limited to this bucket. The spec doesn't document the bucket object, so try known shapes.
+  // Access key limited to this bucket. The live API wants bucket names as plain strings
+  // ('"buckets[0]" must be a string'); the published spec shows objects. Older shapes stay as fallbacks.
   let key = null; let lastErr = null;
   const description = `${app || bucket} via Claude Liara plugin`;
   const shapes = [
+    [bucket],
+    ...(b?.id ? [[b.id]] : []),
     [{ id: b?.id, name: bucket, permission: 'READ_WRITE' }],
-    [{ id: b?.id, name: bucket }],
     [{ name: bucket }],
   ];
   for (const buckets of shapes) {
@@ -178,22 +196,36 @@ export async function connectStorage(api, args) {
       if (key?.accessKey) break;
     } catch (err) {
       lastErr = err;
-      if (err.status !== 400) break;
+      if (![400, 404, 422].includes(err.status)) break;
     }
   }
-  if (!key?.accessKey) throw new LiaraError(`Could not create a storage access key: ${lastErr?.message || 'no key returned'}. Create one in the Liara console and pass it with set_envs.`, { status: lastErr?.status });
-  steps.push('created access key for the bucket');
+  if (key?.accessKey) steps.push('created access key for the bucket');
 
   const host = new URL(endpoint).host;
   const creds = {
-    accessKey: key.accessKey, secretKey: key.secretKey, bucket, endpoint, region: 'us-east-1',
+    accessKey: key?.accessKey, secretKey: key?.secretKey, bucket, endpoint, region: 'us-east-1',
     publicUrl: `https://${bucket}.${host}`,
   };
   const keys = envKeys?.length ? envKeys : defaultKeys('storage', { platform });
   const { vars, unmapped } = fillKeys('storage', keys, creds, { platform });
   let envResult = null;
+  // Without a key, still write bucket/endpoint/region so only the two key vars are left.
   if (app && Object.keys(vars).length) envResult = await setEnvs(api, { app, vars, kind: 'storage' });
+  if (!key?.accessKey) {
+    const missing = keys.filter((k) => ['accessKey', 'secretKey'].includes(roleOf('storage', k)));
+    return {
+      steps,
+      success: false,
+      error: `Could not create a storage access key: ${lastErr?.message || 'no key returned'}`,
+      bucket: { name: bucket, plan: b?.plan, permission: b?.permission, endpoint },
+      envVars: masked('storage', vars),
+      missingEnvKeys: missing,
+      appEnvUpdate: envResult,
+      nextStep: `Create an access key for bucket "${bucket}" in the Liara console (Object Storage → Access keys), save it in a local gitignored env file, and copy ${missing.join(' and ')} with set_envs {fromEnvFile, keys}. Don't paste the secret into the chat.`,
+    };
+  }
   return {
+    success: true,
     steps,
     bucket: { name: bucket, plan: b?.plan, permission: b?.permission, endpoint },
     envVars: masked('storage', vars),

@@ -67,3 +67,32 @@ test('Python ClickHouse, Elasticsearch and RabbitMQ clients are found', async ()
   }
   assert.ok(svc(r, 'database:clickhouse').envKeys.includes('CLICKHOUSE_PORT'));
 });
+
+test('tests, fixtures and tool settings are not part of the app', async () => {
+  const r = await scan('express-s3-memory');
+  assert.equal(r.port, 3000, 'port from the app, not from a fixture');
+  assert.ok(svc(r, 'database:postgres'));
+  assert.ok(svc(r, 'storage'));
+  assert.equal(svc(r, 'database:mongodb'), undefined, 'fixture app ignored');
+  for (const k of ['FIXTURE_MONGO_URL', 'TEST_ONLY_SECRET', 'LIARA_API_TOKEN']) assert.ok(!r.missingEnvKeys.includes(k), k);
+  assert.ok(!r.otherApis.some((o) => /liara/i.test(o.name)), 'Liara is not an "other API"');
+  assert.ok(!r.warnings.some((w) => /local disk|SQLite/.test(w)), r.warnings.join(' | '));
+});
+
+test('a folder with several apps says so instead of guessing', async () => {
+  const r = await scan('multi-project');
+  assert.equal(r.rootIsProject, false);
+  assert.deepEqual(r.subprojects, ['api', 'web']);
+  assert.match(r.warnings[0], /No app at the top of this folder, but 2 separate projects inside: api, web/);
+  assert.ok(!r.warnings.some((w) => /Dockerfile will be needed/.test(w)));
+});
+
+test('multer writing to disk is still flagged', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'liara-multer-'));
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'up', scripts: { start: 'node index.js' }, dependencies: { express: '4', multer: '1' } }));
+  fs.writeFileSync(path.join(dir, 'index.js'), "const multer = require('multer');\nconst upload = multer({ dest: 'uploads/' });\nrequire('express')().listen(3000);\n");
+  const r = await detectProject(dir, { checkDns: false });
+  assert.ok(r.warnings.some((w) => /writes uploaded files to local disk \(index\.js\)/.test(w)), r.warnings.join(' | '));
+});

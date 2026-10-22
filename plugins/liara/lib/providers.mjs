@@ -79,7 +79,7 @@ export const PACKAGE_RULES = {
   '@google-cloud/storage': { kind: 'storage', provider: 'Google Cloud Storage', needsCodeChange: true },
   '@azure/storage-blob': { kind: 'storage', provider: 'Azure Blob Storage', needsCodeChange: true },
   uploadthing: { kind: 'storage', provider: 'UploadThing', needsCodeChange: true },
-  multer: { kind: 'disk', note: 'multer saves uploads to local disk unless configured with S3' },
+  // multer is not listed here: detect.mjs warns only when the code stores uploads on disk (dest option or disk storage).
 
   // ---------- email (JS) ----------
   nodemailer: { kind: 'email', sdk: 'smtp' },
