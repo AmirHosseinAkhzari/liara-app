@@ -1,8 +1,8 @@
 {
   "name": "claude-plugin-liara",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
-  "description": "Claude Code plugin: auto-deploy to Liara and connect its database, storage, mail, DNS and AI services.",
+  "description": "Claude Code plugin: Liara cloud assistant (deploy, verify, diagnose, prices, billing, VPS, docs, status, GitHub, reports).",
   "type": "module",
   "engines": {
     "node": ">=20"

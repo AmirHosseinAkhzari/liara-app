@@ -10,8 +10,8 @@
     {
       "name": "liara",
       "source": "./plugins/liara",
-      "description": "Auto-deploy any project to Liara and connect Liara databases, object storage, mail, DNS and AI.",
-      "version": "0.3.1",
+      "description": "Liara cloud assistant: analyze a project, deploy it with live prices and one approval, connect Liara databases, storage, mail, DNS and AI, verify with real checks, diagnose failures, manage VPS, check billing and Liara status, search the official docs, set up GitHub auto-deploy, and write a static HTML report.",
+      "version": "0.4.0",
       "category": "deployment"
     }
   ]

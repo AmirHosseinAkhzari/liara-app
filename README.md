@@ -11,12 +11,14 @@ A Claude Code plugin that deploys any project to [Liara](https://liara.ir) from 
 
 In any project, say **"deploy this to Liara"** or run `/liara:deploy`. Claude:
 
-1. **Logs in automatically** with the same browser login as `liara login` (shared with the Liara CLI). The token never appears in the chat.
-2. **Finds the project type**: language, framework, Liara platform and port.
-3. **Finds the services the app uses**: every database type Liara offers (PostgreSQL with PostGIS/pgvector, MySQL, MariaDB, MongoDB, Redis, SQL Server, Elasticsearch, RabbitMQ, ClickHouse) plus SQLite, S3 storage, email, DNS/domains, AI and other APIs.
-4. **Connects Liara services and sets the env vars** automatically, using the variable names the code already reads.
-5. **Asks before moving anything that runs in production elsewhere**, then transfers the data (databases, bucket files, DNS records).
-6. **Deploys**, waits for the release, reads the build logs and fixes failures.
+1. **Logs in automatically** with the same browser login as `liara login`, and works in your personal account or a team you choose.
+2. **Analyzes the project**: framework, runtime version, port, build/start, workers, health endpoints, tests, and every service it uses (all 9 Liara database engines, Redis, S3 storage, email, DNS, AI, other APIs).
+3. **Shows live prices and asks once** (one confirmation dialog for the whole plan, with the monthly cost).
+4. **Connects Liara services and sets env vars**, asks before replacing a working provider, and moves the data when you agree.
+5. **Deploys, then verifies** with real HTTP health checks; on failure it **diagnoses from evidence**, fixes and redeploys.
+6. **Writes a static HTML report** (Liara branding, Persian or English).
+
+It also answers from the official docs, compares prices, checks billing, creates and manages VPS, checks Liara's status page, and sets up automatic deploys from GitHub. Details, permissions and API limitations: [plugins/liara/README.md](plugins/liara/README.md).
 
 Install from this folder:
 
@@ -27,8 +29,6 @@ claude plugin marketplace add ./
 ```bash
 claude plugin install liara@liara-tools
 ```
-
-Details, commands and tools: [plugins/liara/README.md](plugins/liara/README.md).
 
 ## Liara APIs
 
