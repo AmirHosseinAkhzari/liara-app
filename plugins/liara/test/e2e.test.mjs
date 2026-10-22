@@ -9,14 +9,16 @@ import { startMock } from './mock-liara.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = (n) => path.join(here, 'fixtures', n);
-let mock; let callTool; let workdir;
+let mock; let callTool; let rawCall; let workdir;
 
 before(async () => {
   mock = await startMock();
   process.env.LIARA_API_MOCK = mock.url;
   process.env.LIARA_API_TOKEN = 'test-token';
   process.env.LIARA_AUTH_FILE = path.join(os.tmpdir(), 'liara-e2e-no-auth.json');
-  ({ callTool } = await import('../lib/tools.mjs'));
+  ({ callTool: rawCall } = await import('../lib/tools.mjs'));
+  // A user who accepts every confirmation dialog.
+  callTool = (n, a, o = {}) => rawCall(n, a, { elicit: async () => ({ action: 'accept' }), ...o });
   // copy the fixture so liara.json writes don't touch the repo
   workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'liara-e2e-'));
   fs.cpSync(fixture('next-supabase'), workdir, { recursive: true });

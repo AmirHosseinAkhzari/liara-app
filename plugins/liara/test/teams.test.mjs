@@ -10,14 +10,16 @@ import { startMock } from './mock-liara.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const TEAM2 = 'aaaaaaaaaaaaaaaaaaaaaaa2';
-let mock; let callTool; let setChosenTeam; let workdir;
+let mock; let callTool; let rawCall; let setChosenTeam; let workdir;
 const liaraJson = () => JSON.parse(fs.readFileSync(path.join(workdir, 'liara.json'), 'utf8'));
 
 before(async () => {
   mock = await startMock();
   process.env.LIARA_API_MOCK = mock.url;
   process.env.LIARA_API_TOKEN = 'test-token';
-  ({ callTool } = await import('../lib/tools.mjs'));
+  ({ callTool: rawCall } = await import('../lib/tools.mjs'));
+  // A user who accepts every confirmation dialog.
+  callTool = (n, a, o = {}) => rawCall(n, a, { elicit: async () => ({ action: 'accept' }), ...o });
   ({ setChosenTeam } = await import('../lib/teams.mjs'));
   workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'liara-teams-'));
   fs.cpSync(path.join(here, 'fixtures', 'express-plain'), workdir, { recursive: true });

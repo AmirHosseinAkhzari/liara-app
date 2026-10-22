@@ -39,7 +39,7 @@ function gitInfo(root) {
 export const needsNetwork = (planID) => /(^|-)g2$/.test(String(planID || ''));
 
 // Monthly price in Toman: displayPrice when given, else the hourly price × 720 (as the Liara CLI shows it).
-const monthly = (p) => (p?.displayPrice ?? (typeof p?.price === 'number' ? Math.round(p.price * 720) : null));
+export const monthly = (p) => (p?.displayPrice ?? p?.monthlyPrice ?? (typeof p?.price === 'number' ? Math.round(p.price * 720) : typeof p?.hourlyPrice === 'number' ? Math.round(p.hourlyPrice * 720) : null));
 
 // Feature bundles a plan can (or must) take: [{ id, monthlyToman }], or null when it has none.
 export function bundlesOf(plans, group, planID) {

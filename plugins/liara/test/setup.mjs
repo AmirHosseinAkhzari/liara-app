@@ -9,3 +9,4 @@ process.env.LIARA_AUTH_FILE ||= path.join(dir, 'auth.json');
 delete process.env.LIARA_API_TOKEN;
 delete process.env.LIARA_TOKEN;
 delete process.env.LIARA_TEAM_ID;
+process.env.LIARA_CLAUDE_HOME ||= path.join(dir, 'liara-claude');

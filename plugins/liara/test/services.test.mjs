@@ -3,12 +3,14 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startMock } from './mock-liara.mjs';
 
-let mock; let callTool;
+let mock; let callTool; let rawCall;
 before(async () => {
   mock = await startMock();
   process.env.LIARA_API_MOCK = mock.url;
   process.env.LIARA_API_TOKEN = 'test-token';
-  ({ callTool } = await import('../lib/tools.mjs'));
+  ({ callTool: rawCall } = await import('../lib/tools.mjs'));
+  // A user who accepts every confirmation dialog.
+  callTool = (n, a, o = {}) => rawCall(n, a, { elicit: async () => ({ action: 'accept' }), ...o });
   await callTool('create_app', { app: 'cafe-crm', platform: 'node', planID: 'small-g2' });
 });
 after(() => mock.close());
