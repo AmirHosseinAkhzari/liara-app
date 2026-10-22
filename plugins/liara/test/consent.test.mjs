@@ -127,6 +127,36 @@ test('the audit log records changes without secret values', async () => {
   assert.equal((fs.statSync(AUDIT_FILE).mode & 0o777), 0o600);
 });
 
+test('no balance: stops before the dialog; low balance: the dialog warns', async () => {
+  mock.state.balance = 0;
+  try {
+    const u = user('accept');
+    const r = await callTool('create_app', { app: 'broke', platform: 'node', planID: 'small-g2' }, { elicit: u.elicit });
+    assert.equal(r.notEnoughBalance, true);
+    assert.equal(u.seen.length, 0, 'no pointless dialog');
+    assert.match(r.message, /balance of this account is 0 Toman/);
+    assert.equal(mock.state.projects.broke, undefined);
+    const plan = await callTool('approve_plan', { title: 'x', operations: [{ tool: 'create_app', target: 'broke', kind: 'app', plan: 'small-g2', summary: 'Create' }] }, { elicit: u.elicit });
+    assert.equal(plan.notEnoughBalance, true);
+    // If Liara refuses anyway (402), the error says why in plain words.
+    await assert.rejects(callTool('api', { service: 'paas', method: 'POST', path: '/v1/projects', body: { name: 'x', platform: 'node', planID: 'small-g2', network: 'net1' } }, { elicit: u.elicit }), /not enough balance on this account/);
+    mock.state.balance = 5000;
+    const low = user('decline');
+    await callTool('create_app', { app: 'lowbal', platform: 'node', planID: 'small-g2' }, { elicit: low.elicit });
+    assert.match(low.seen[0].message, /Balance: 5,000 Toman on this account/);
+    assert.match(low.seen[0].message, /Warning: Low balance/);
+  } finally {
+    mock.state.balance = 1_000_000;
+  }
+});
+
+test('deleting something that does not exist asks nothing and says not found', async () => {
+  const u = user('accept');
+  await assert.rejects(callTool('delete_app', { app: 'never-existed' }, { elicit: u.elicit }), /not found/);
+  await assert.rejects(callTool('vm_action', { vm: 'no-such-vm', action: 'delete' }, { elicit: u.elicit }), /not found/);
+  assert.equal(u.seen.length, 0);
+});
+
 // The real server, talking to a fake MCP client that supports dialogs.
 function startServer(capabilities) {
   const child = spawn(process.execPath, [path.join(here, '..', 'server', 'index.mjs')], { env: { ...process.env }, stdio: ['pipe', 'pipe', 'pipe'] });

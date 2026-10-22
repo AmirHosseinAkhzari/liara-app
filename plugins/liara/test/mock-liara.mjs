@@ -6,7 +6,7 @@ export function startMock() {
   const state = {
     projects: {}, databases: {}, buckets: {}, keys: [], zones: {}, records: {}, mails: [], workspaces: [], aiKeys: [], domains: [],
     uploads: [], releases: {}, requests: [], calls: [],
-    networks: [{ _id: 'net1', name: 'test-net' }], createdProjects: [], logs: {}, buildLogs: {}, vms: [],
+    networks: [{ _id: 'net1', name: 'test-net' }], createdProjects: [], logs: {}, buildLogs: {}, vms: [], balance: 1_000_000, teamBalance: 50000,
     // Teams the test user belongs to: owner of one, view-only in the other.
     teams: [
       { _id: 'aaaaaaaaaaaaaaaaaaaaaaa2', name: 'تیم ۲', role: { name: 'مالک', permissions: [{ name: 'manage', type: 'project' }, { name: 'create', type: 'project' }, { name: 'create', type: 'database' }] } },
@@ -46,7 +46,7 @@ export function startMock() {
       const t = state.teams.find((x) => x._id === teamID);
       if (teamID && !t) return send(403, { message: 'not a member of this team' });
       return send(200, {
-        ...(t ? { team: { _id: t._id, isTeam: true, teamName: t.name, teamMemberRole: t.role, balance: 50000, minCreditAmount: 10000 } } : {}),
+        ...(t ? { team: { _id: t._id, isTeam: true, teamName: t.name, teamMemberRole: t.role, balance: state.teamBalance, minCreditAmount: 10000 } } : {}),
         user: { fullname: 'Test User', email: 't@example.com', isVerified: true, storage: { secretKey: 'should-not-leak' } },
         plans: {
           projects: { 'small-g2': { available: true, CPU: { amount: 0.5 }, RAM: { amount: 0.5 }, volume: 5, displayPrice: 475000 }, 'medium-g2': { available: true, CPU: { amount: 1 }, RAM: { amount: 1 }, volume: 10, price: 1000 }, old: { available: false } },
@@ -58,7 +58,7 @@ export function startMock() {
     }
     if (service === 'account' && p === '/v1/me/free-credit') return send(200, { remainingFreeCredit: 0 });
     // ---- billing: like the live API, it ignores teamID and answers for the user
-    if (service === 'billing' && p === '/v1/billing') return send(200, { user: { balance: 1_000_000, accountType: 'personal', contactInfo: { phone: 'SHOULD-NOT-LEAK' }, minCreditAmount: 50000, isManualMinCredit: false } });
+    if (service === 'billing' && p === '/v1/billing') return send(200, { user: { balance: state.balance, accountType: 'personal', contactInfo: { phone: 'SHOULD-NOT-LEAK' }, minCreditAmount: 50000, isManualMinCredit: false } });
     // ---- iaas
     if (service === 'iaas') {
       if (m === 'GET' && p === '/plans') return send(200, { plans: { 'standard-base-g2': { available: true, monthlyPrice: 900000, hourlyPrice: 1250, volume: 30, RAM: { amount: 2 }, CPU: { amount: 1 }, IPv4MonthlyPrice: [100000] }, old: { available: false, monthlyPrice: 1 } } });
@@ -86,6 +86,7 @@ export function startMock() {
         return send(201, {});
       }
       if (m === 'POST' && p === '/v1/projects') {
+        if ((teamID ? state.teamBalance : state.balance) <= 0) return send(402, { message: 'Not enough balance.' });
         if (state.projects[body.name]) return send(409, { message: 'exists' });
         if (/g2$/.test(body.planID) && !body.network) return send(400, { message: 'g2_plan_unavailable' });
         state.createdProjects.push(body);

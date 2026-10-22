@@ -68,6 +68,8 @@ export function consentText(c) {
   row('What happens', c.effect);
   row('Why', c.why);
   row('Cost', c.cost);
+  row('Balance', c.balance);
+  row('Warning', c.warning);
   row('Data used', c.data);
   row('Permission needed', c.permission);
   row('Afterwards', c.after);

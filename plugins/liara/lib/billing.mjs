@@ -6,6 +6,16 @@ import { priceOf, DOCS } from './pricing.mjs';
 
 export const CONSOLE_BILLING = 'https://console.liara.ir/';
 
+// Balance of the account calls go to (team balance from /v1/me, personal from /v1/billing).
+export async function accountBalance(api) {
+  if (api.auth.teamID) {
+    const t = (await api.get('account', '/v1/me')).team || {};
+    return { balanceToman: t.balance ?? null, minCreditAmount: t.minCreditAmount ?? null };
+  }
+  const u = (await api.get('billing', '/v1/billing')).user || {};
+  return { balanceToman: u.balance ?? null, minCreditAmount: u.minCreditAmount ?? null };
+}
+
 export async function billingOverview(api) {
   const inTeam = Boolean(api.auth.teamID);
   // /v1/billing always answers for the user's own account (it ignores teamID); a team's

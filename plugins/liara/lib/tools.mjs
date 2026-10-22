@@ -7,7 +7,7 @@ import { migrateDatabase, migrateStorage } from './migrate.mjs';
 import { browserLogin, logout, useAccount, readAuthFile, AUTH_FILE } from './login.mjs';
 import { listTeams, resolveTeam, setChosenTeam, teamContext, describeContext, liaraJsonTeam } from './teams.mjs';
 import { priceOf, formatToman, productPlans, estimate } from './pricing.mjs';
-import { billingOverview } from './billing.mjs';
+import { billingOverview, accountBalance, CONSOLE_BILLING } from './billing.mjs';
 import { listVms, vmDetails, createVm, vmPower, vmResize, vmDelete } from './vps.mjs';
 import { requireConsent, approvePlan, RISK_LABEL } from './consent.mjs';
 import { record } from './audit.mjs';
@@ -657,6 +657,10 @@ export const TOOLS = [
         target: `plan:${crypto.createHash('sha1').update(JSON.stringify(ops)).digest('hex').slice(0, 10)}`,
         after: 'Each step still reports its real result; nothing is assumed to have worked.',
       };
+      if (billable.length) {
+        const stop = await balanceGate(api, c, total);
+        if (stop) return stop;
+      }
       const gate = await requireConsent(ctx, 'approve_plan', args, c);
       if (!gate.ok) return gate.result;
       const planId = crypto.randomBytes(5).toString('hex');
@@ -704,6 +708,22 @@ async function costLine(api, item) {
   } catch (err) {
     return `could not read the price (${err.message})`;
   }
+}
+
+// Before asking to create something paid: is there money for it? Balance 0 → stop (Liara
+// answers 402 "Not enough balance"); low balance → warn in the dialog.
+async function balanceGate(api, c, monthlyToman) {
+  const b = await accountBalance(api).catch(() => null);
+  if (!b || typeof b.balanceToman !== 'number') return null;
+  c.balance = `${formatToman(b.balanceToman)} on this account`;
+  if (b.balanceToman <= 0) {
+    return { notEnoughBalance: true, nothingChanged: true, balanceToman: b.balanceToman, message: `The balance of this account is ${formatToman(b.balanceToman)}, so Liara will refuse to create paid resources ("Not enough balance"). Add credit in the Liara console (${CONSOLE_BILLING}) or choose another account (teams tool), then try again.` };
+  }
+  const daily = typeof monthlyToman === 'number' ? monthlyToman / 30 : 0;
+  if ((b.minCreditAmount && b.balanceToman < b.minCreditAmount) || (daily && b.balanceToman < daily)) {
+    c.warning = `Low balance (${formatToman(b.balanceToman)}): Liara may refuse this or stop the resource soon.`;
+  }
+  return null;
 }
 
 function envNames(args, cwd) {
@@ -859,6 +879,8 @@ const CONSENTS = {
   async vm_action(args, api) {
     const v = args.vm;
     if (args.action === 'delete') {
+      const exists = ((await api.get('iaas', '/vm').catch(() => null))?.vms || []).some((x) => x._id === v || x.name === v);
+      if (!exists) return null; // the handler reports "not found"
       return { risk: 'destructive', title: `Delete VPS «${v}»`, target: v, resource: `VPS ${v}`, effect: 'Deletes the server and its disk. All data on it is lost for good.', cost: 'Billing for it stops.', typedConfirm: v };
     }
     if (args.action === 'resize') {
@@ -867,7 +889,8 @@ const CONSENTS = {
     const effect = { start: 'Powers the server on.', shutdown: 'Shuts the server down gracefully; it is unreachable until started.', stop: 'Forces the power off (like pulling the plug); unsaved data can be lost.', reboot: 'Restarts the server; it is unreachable for a moment.' }[args.action];
     return { risk: 'change', title: `${args.action} VPS «${v}»`, target: v, plan: args.action, resource: `VPS ${v}`, effect, cost: 'No change to the plan.' };
   },
-  async delete_app(args) {
+  async delete_app(args, api) {
+    if (!(await getApp(api, args.app))) return null; // the handler reports "not found"
     return { risk: 'destructive', title: `Delete app «${args.app}»`, target: args.app, resource: `app ${args.app}`, effect: 'Deletes the app with its releases, settings, env vars and disks. This cannot be undone. Databases and buckets are kept.', cost: 'Billing for the app stops.', typedConfirm: args.app };
   },
   async api(args) {
@@ -926,6 +949,14 @@ export async function callTool(name, args = {}, { cwd = process.cwd(), elicit = 
     consent = await tool.consent(args, api, ctx);
     if (consent) {
       consent.account ||= account;
+      if (consent.risk === 'billable' && PRICE_KIND[name] && consent.plan) {
+        const p = await priceOf(api, { kind: PRICE_KIND[name], plan: consent.plan, bundle: consent.bundle }).catch(() => null);
+        const stop = await balanceGate(api, consent, p?.monthlyToman);
+        if (stop) {
+          record({ tool: name, risk: 'billable', account, target: consent.target, outcome: 'blocked: no balance', result: stop, started });
+          return stop;
+        }
+      }
       const gate = await requireConsent(ctx, name, args, consent);
       if (!gate.ok) {
         record({ tool: name, risk: consent.risk, account, target: consent.target, outcome: gate.result.cancelled ? 'declined' : 'waiting for confirmation', result: gate.result, started });

@@ -100,6 +100,7 @@ export function createClient({ cwd = process.cwd(), token, teamID } = {}) {
     }
     if (!res.ok) {
       if (res.status === 401) throw new LiaraError(`token from ${auth.source} rejected`, { status: 401, body: data, method, url: url.pathname });
+      if (res.status === 402) throw new LiaraError(`Liara refused ${method} ${url.pathname}: not enough balance on this account${auth.teamID ? ' (team)' : ''}. Add credit at https://console.liara.ir/ or choose another account.`, { status: 402, body: data, method, url: url.pathname });
       const detail = typeof data === 'object' && data ? data.message || data.error || JSON.stringify(data) : text;
       throw new LiaraError(`${method} ${url.pathname} → ${res.status}: ${String(detail).slice(0, 500)}`, {
         status: res.status,
