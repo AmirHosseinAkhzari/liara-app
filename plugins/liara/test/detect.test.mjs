@@ -125,3 +125,8 @@ test('Next.js uses Liara\'s "next" platform and flags an unsupported Node versio
   assert.equal(r.runtime.status, 'NOT supported by Liara');
   assert.ok(r.warnings.some((w) => /node 12 \(package\.json engines\.node\) is not a version Liara supports \(20, 22, 24\)/.test(w)), r.warnings.join(' | '));
 });
+
+test('Laravel scheduled commands become one Liara cron line for the scheduler', async () => {
+  const r = await scan('laravel-local');
+  assert.deepEqual(r.cronSuggestions.map((c) => `${c.schedule} ${c.command}`), ['* * * * * cd $ROOT && php artisan schedule:run >> /dev/null 2>&1']);
+});

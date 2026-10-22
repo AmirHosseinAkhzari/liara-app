@@ -27,7 +27,7 @@ function hasCredentials(v) {
 export function masked(kind, vars) {
   return Object.fromEntries(Object.entries(vars).map(([k, v]) => {
     const role = kind ? roleOf(kind, k) : null;
-    const secret = (role && SECRET_ROLES.has(role)) || /(PASSWORD|SECRET|TOKEN|_KEY|PASS|PWD|DSN|CREDENTIALS)$/.test(k) || hasCredentials(v);
+    const secret = (role && SECRET_ROLES.has(role)) || /(PASSWORD|SECRET|TOKEN|_KEY|PASS|PWD|DSN|CREDENTIALS|AUTH)$/.test(k) || hasCredentials(v);
     return [k, secret ? maskValue(v) : v];
   }));
 }

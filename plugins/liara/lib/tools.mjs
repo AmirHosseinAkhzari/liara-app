@@ -16,6 +16,9 @@ import { serviceStatus } from './status.mjs';
 import { searchDocs, readDoc } from './docs.mjs';
 import { inspectGithub, setupAutoDeploy, autoDeployStatus } from './github.mjs';
 import { buildReport, checkReport, writeReportFile } from './report.mjs';
+import { deployService, serviceSpec, SERVICE_CATALOG } from './dockerservices.mjs';
+import { listDisks, ensureDisk, addDiskMount, mountPath, setCron, readLiaraJson } from './disks.mjs';
+import { meCatalog } from './pricing.mjs';
 import { parseEnvFile } from './envfiles.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -558,6 +561,82 @@ export const TOOLS = [
     },
   },
   {
+    name: 'deploy_service',
+    description: 'Run a service Liara has no managed product for (Neo4j, n8n, Meilisearch, Qdrant, Typesense, or any Docker image, e.g. from docker-compose) as its own Liara docker app: creates the app in the same private network as connectTo, generates its passwords (never shown), creates disks for its data, deploys the image, waits for the release, then writes the connection env vars into the connectTo app (e.g. NEO4J_URI=bolt://<service>:7687). Asks first with the monthly cost.',
+    inputSchema: {
+      type: 'object',
+      required: ['name', 'planID'],
+      properties: {
+        name: str('Liara app name for the service, e.g. "<app>-neo4j".'),
+        service: str('Known service: n8n | neo4j | meilisearch | qdrant | typesense (settings from Liara or the image docs).', { enum: ['n8n', 'neo4j', 'meilisearch', 'qdrant', 'typesense'] }),
+        image: str('Any Docker image instead of service, e.g. "redis/redis-stack:7.4.0-v1" (from scan_project dockerServices).'),
+        tag: str('Image tag (default latest; pin one when you can).'),
+        port: num('HTTP port the image listens on (known services: default).'),
+        disks: { type: 'array', description: 'Data folders: [{name, mountTo (absolute), size (GB)}]. Known services: default.', items: { type: 'object', properties: { name: str('Disk name.'), mountTo: str('Absolute path in the container.'), size: str('GB, e.g. "1".') } } },
+        env: { type: 'object', additionalProperties: { type: 'string' }, description: 'Extra non-secret env vars for the service.' },
+        connectTo: str('The app that uses the service: gets the connection env vars and shares its private network.'),
+        planID: str('Plan for the service app (g2, see plans).'),
+        bundlePlanID: str('Feature bundle for that plan (see plans).'),
+        network: str('Private network (default: connectTo\'s network).'),
+        wait: num('Seconds to wait for the release (default 300).'),
+      },
+    },
+    handler: (args, api) => deployService(api, args),
+  },
+  {
+    name: 'disks',
+    description: 'Disks of a Liara app (name, size in GB) plus the plan\'s disk space and how much is free.',
+    inputSchema: { type: 'object', required: ['app'], properties: { app: APP } },
+    async handler({ app }, api) {
+      const { project, disks: list } = await listDisks(api, app);
+      const plan = (await meCatalog(api).catch(() => null))?.plans?.projects?.[project.planID];
+      const used = list.reduce((s, d) => s + (d.size || 0), 0);
+      return { app, plan: project.planID, planVolumeGB: plan?.volume ?? null, usedGB: used, freeGB: plan?.volume != null ? Math.max(0, plan.volume - used) : null, disks: list };
+    },
+  },
+  {
+    name: 'connect_disk',
+    description: 'Give an app persistent storage (Liara apps have a read-only file system): creates a disk on Liara if missing (checks the plan has room) and mounts it via liara.json "disks" (path relative to the project for source apps, absolute for image apps). The mount applies on the next deploy. Use scan_project diskSuggestions for uploads, SQLite and service data.',
+    inputSchema: {
+      type: 'object',
+      required: ['app', 'name', 'size', 'mountTo'],
+      properties: {
+        app: APP,
+        name: str('Disk name, e.g. "uploads".'),
+        size: str('Size in GB, e.g. "1" or "2.5" (from the plan\'s free disk space).'),
+        mountTo: str('Folder to mount: relative to the project (e.g. "uploads", "public/uploads", "storage/app"), or absolute for Docker images.'),
+        path: PATH,
+        image: bool('The app deploys a Docker image (absolute mount path).'),
+      },
+    },
+    async handler(args, api, ctx) {
+      const mountTo = mountPath(args.mountTo, { image: Boolean(args.image) });
+      const r = await ensureDisk(api, args.app, { name: args.name, size: args.size });
+      const root = path.resolve(ctx.cwd, args.path || '.');
+      const mounts = addDiskMount(root, { name: args.name, mountTo });
+      return { app: args.app, disk: r.disk, created: r.created, mountTo, liaraJsonDisks: mounts, note: 'The disk is mounted on the next deploy (deploy reads liara.json "disks"). Files already in that folder of the project are hidden by the mount.', docs: 'https://docs.liara.ir/paas/disks/about/' };
+    },
+  },
+  {
+    name: 'set_cron',
+    description: 'Schedule jobs with Liara\'s cron system: writes liara.json "cron" lines ("<minute hour day month weekday> <command>", e.g. "* * * * * cd $ROOT && php artisan schedule:run >> /dev/null 2>&1") after validating them; the next deploy applies them. Use scan_project cronSuggestions (Laravel scheduler, vercel.json crons). Says whether Liara documents liara.json cron for the platform.',
+    inputSchema: {
+      type: 'object',
+      required: ['jobs'],
+      properties: {
+        jobs: { type: 'array', items: { type: 'object', required: ['schedule', 'command'], properties: { schedule: str('5-field cron schedule.'), command: str('One-line shell command; $ROOT is the project folder on Liara.') } } },
+        replace: bool('Replace all existing cron lines (default: add).'),
+        path: PATH,
+        platform: PLATFORM,
+      },
+    },
+    async handler(args, api, ctx) {
+      const root = path.resolve(ctx.cwd, args.path || '.');
+      const platform = normalizePlatform(args.platform || readLiaraJson(root).platform) || (await detectProject(root, { checkDns: false }).catch(() => null))?.platform;
+      return setCron(root, { jobs: args.jobs || [], replace: args.replace, platform });
+    },
+  },
+  {
     name: 'vps_list',
     description: 'Cloud VPSes on the account (name, plan, OS, state, power, IPs, SSH port). With vm: one VPS in detail. Root passwords are never returned.',
     inputSchema: { type: 'object', properties: { vm: str('VPS name or ID for details.') } },
@@ -687,7 +766,7 @@ export const TOOLS = [
 ];
 
 // Which price list a billable tool's plan belongs to (for reports).
-const PRICE_KIND = { create_app: 'app', deploy: 'app', connect_database: 'database', connect_storage: 'bucket', connect_mail: 'mail', create_vm: 'vps', vm_action: 'vps' };
+const PRICE_KIND = { create_app: 'app', deploy: 'app', deploy_service: 'app', connect_database: 'database', connect_storage: 'bucket', connect_mail: 'mail', create_vm: 'vps', vm_action: 'vps' };
 
 // Tools that act on the login itself, not on an account's resources.
 const ACCOUNT_LEVEL = new Set(['login', 'accounts', 'logout']);
@@ -865,6 +944,27 @@ const CONSENTS = {
       data: 'Nothing leaves this computer now. GitHub will use your LIARA_API_TOKEN secret, which you add yourself.',
       cost: 'No new resource; each deploy replaces the running version.',
       after: 'You get the remaining steps (add the secret, commit and push or open a PR if the branch is protected).',
+    };
+  },
+  async deploy_service(args, api) {
+    const spec = serviceSpec(args);
+    const c = spec.catalog ? SERVICE_CATALOG[spec.catalog] : null;
+    return {
+      risk: 'billable', title: `Run ${c ? c.title : spec.image} as Liara app «${args.name}»`, target: args.name, plan: args.planID, bundle: args.bundlePlanID,
+      resource: `docker app ${args.name}: ${spec.image}, port ${spec.port}${spec.disks.length ? `, disks ${spec.disks.map((d) => `${d.name} ${d.size} GB → ${d.mountTo}`).join(', ')}` : ''}`,
+      effect: `Creates the app${args.connectTo ? ` in ${args.connectTo}'s private network` : ''}, ${c?.secrets?.length ? `generates ${c.secrets.join(', ')} (stored only as Liara env vars), ` : ''}creates its disks and deploys the image.${args.connectTo && c?.connection ? ` Then sets ${Object.keys(c.connection(args.name, Object.fromEntries((c.secrets || []).map((k) => [k, 'x'])))).join(', ')} on ${args.connectTo} (it restarts).` : ''}`,
+      cost: await costLine(api, { kind: 'app', plan: args.planID, bundle: args.bundlePlanID }),
+      details: [spec.latest ? 'Image tag is "latest"; a pinned version is safer.' : null, c?.oneClick ? `Liara also has a ready-made ${c.title} app: ${c.oneClick}` : null, 'Disks use the plan\'s disk space.'].filter(Boolean),
+    };
+  },
+  async connect_disk(args, api) {
+    const project = await getApp(api, args.app);
+    if (!project) return null; // the handler reports "not found"
+    return {
+      risk: 'change', title: `Add a ${args.size} GB disk to «${args.app}»`, target: `${args.app}:disk:${args.name}`,
+      resource: `disk ${args.name} on ${args.app}, mounted at ${args.mountTo}`,
+      effect: 'Creates the disk on Liara (if missing) and adds the mount to liara.json; the next deploy mounts it.',
+      cost: `Uses ${args.size} GB of plan ${project.planID}'s disk space; the API lists no separate disk price.`,
     };
   },
   async create_vm(args, api) {

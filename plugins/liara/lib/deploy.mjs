@@ -246,6 +246,19 @@ export async function deploy(api, args) {
     }
   })();
 
+  // liara.json "image": deploy that image instead of uploading the source (docs:
+  // paas/docker/how-tos/deploy-image-from-dockerhub, e.g. Liara's n8n setup).
+  const image = args.image || liaraJson.image;
+  if (image) {
+    const body = { image, port: Number(port), type: platform || 'docker' };
+    for (const k of ['disks', 'cron', 'args', 'healthCheck']) if (liaraJson[k] !== undefined) body[k] = liaraJson[k];
+    if (args.message) body.message = args.message;
+    const rel = await api.post('paas', `/v2/projects/${encodeURIComponent(app)}/releases`, body);
+    steps.push(`release ${rel?.releaseID} started from image ${image} (port ${port})`);
+    const status = await releaseStatus(api, { app, releaseID: rel?.releaseID, wait: args.wait ?? 240 });
+    return { app, platform: platform || 'docker', port: Number(port), image, steps, ...status };
+  }
+
   const archive = createArchive(root, { platform, includeEnvFiles: Boolean(args.includeEnvFiles) });
   steps.push(`packed ${archive.filesCount} files (${(archive.size / 1024 / 1024).toFixed(1)} MB)${archive.usedGit ? ', respecting .gitignore' : ''}`);
   if (archive.skippedEnv.length) steps.push(`left out env files: ${archive.skippedEnv.join(', ')} (set their values as Liara env vars)`);

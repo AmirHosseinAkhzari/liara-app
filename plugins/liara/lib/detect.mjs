@@ -508,7 +508,7 @@ export async function detectProject(root, { liaraEnvs = null, checkDns = true } 
   const compose = composeServices(root);
   const hosting = currentHosting(root);
   const warnings = [...stack.notes];
-  const { extras, warnings: extraWarnings } = analyzeExtras(root, { stack, deps, files, port, platform: stack.platform });
+  const { extras, warnings: extraWarnings } = analyzeExtras(root, { stack, deps, files, port, platform: stack.platform, hints });
   warnings.push(...extraWarnings);
   if (codePort) warnings.push(`The code listens on port ${codePort.port} (${codePort.source}), but Liara's ${stack.platform} platform needs port 80. Change it to 80 (or read PORT with a default of 80) and listen on 0.0.0.0.`);
 
@@ -839,6 +839,9 @@ export function summarize(report) {
   const bg = report.background || {};
   const bgLine = [bg.realtime?.length && `WebSockets (${bg.realtime.join(', ')})`, bg.queues?.length && `queues (${bg.queues.join(', ')})`, bg.cron?.length && `cron (${bg.cron.join(', ')})`, bg.workers?.length && 'extra processes'].filter(Boolean);
   if (bgLine.length) lines.push(`Also uses: ${bgLine.join(', ')}`);
+  if (report.dockerServices?.length) lines.push(`Docker services (own Liara apps): ${report.dockerServices.map((d) => `${d.image}${d.catalog ? ` [${d.catalog}]` : ''}`).join(', ')}`);
+  if (report.diskSuggestions?.length) lines.push(`Disks needed: ${report.diskSuggestions.map((d) => d.mountTo).join(', ')}`);
+  if (report.cronSuggestions?.length) lines.push(`Cron jobs: ${report.cronSuggestions.map((c) => `${c.schedule} (${c.why})`).join('; ')}`);
   if (report.git?.github) lines.push(`GitHub: ${report.git.github.owner}/${report.git.github.repo} (branch ${report.git.branch}${report.git.liaraWorkflows.length ? `, Liara workflow: ${report.git.liaraWorkflows.join(', ')}` : ''})`);
   for (const s of report.services) {
     const label = s.kind === 'database' ? `database (${s.engine})` : s.kind;

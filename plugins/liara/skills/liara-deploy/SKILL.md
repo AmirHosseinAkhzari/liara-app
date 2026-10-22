@@ -5,7 +5,7 @@ description: Deploy a project to Liara (Iranian cloud platform) end to end and p
 
 # Deploy to Liara
 
-Tools (MCP `liara`): login, accounts, logout, whoami, teams, scan_project, list_resources, plans, estimate_cost, approve_plan, create_app, connect_database, connect_storage, connect_mail, connect_dns, connect_ai, migrate_database, migrate_storage, set_envs, get_envs, deploy, release_status, verify_app, diagnose, app_logs, app_action, delete_app, service_status, docs_search, docs_read, github_autodeploy, write_report, billing, vps_list, create_vm, vm_action, api.
+Tools (MCP `liara`): login, accounts, logout, whoami, teams, scan_project, deploy_service, connect_disk, disks, set_cron, list_resources, plans, estimate_cost, approve_plan, create_app, connect_database, connect_storage, connect_mail, connect_dns, connect_ai, migrate_database, migrate_storage, set_envs, get_envs, deploy, release_status, verify_app, diagnose, app_logs, app_action, delete_app, service_status, docs_search, docs_read, github_autodeploy, write_report, billing, vps_list, create_vm, vm_action, api.
 
 ## Ground rules
 
@@ -71,6 +71,9 @@ Production env file: `.env.production` > `.env` > the Liara app's env. Never cop
 - **Email**: `connect_mail {domain, plan, mode: "LIVE", account: "noreply"}`; DNS records via `addDnsRecords` or `dnsRecordsNeeded`.
 - **AI**: `connect_ai {workspace, plan}`; model IDs need provider prefixes (`plans {product: "ai"}`).
 - **DNS / domain**: after the first successful deploy, `connect_dns {domain, app, includeWww}`; give the user the nameservers.
+- **Services Liara doesn't manage** (`dockerServices` in the scan: Neo4j, n8n, Meilisearch, Qdrant, Typesense, or any image from docker-compose): run each as its own Liara docker app with `deploy_service {name: "<app>-<service>", service | image (+tag, port, disks), planID, bundlePlanID, connectTo: <app>}`. It joins the app's private network, generates passwords, creates disks for the data, deploys the image and writes the connection env vars into the app (e.g. `NEO4J_URI=bolt://<app>-neo4j:7687`). Use the compose tag when there is one (not `latest`). If Liara has a ready-made app (`oneClick`), mention it as an alternative. Add each service app to `approve_plan` (kind app + plan + bundle).
+- **Disks** (`diskSuggestions`): Liara's file system is read-only, so uploads, SQLite and other files the app writes need a disk: `connect_disk {app, name, size, mountTo}` (relative path for source apps, e.g. `uploads`, `public/uploads`, `storage/app`; absolute for images). Check free space with `disks`. Offer Object Storage instead when the code can use S3. The mount applies on the next deploy.
+- **Scheduled jobs** (`cronSuggestions`, workers/cron in the scan): use Liara's cron with `set_cron {jobs: [{schedule, command}]}` (Laravel: `* * * * * cd $ROOT && php artisan schedule:run >> /dev/null 2>&1`; vercel.json crons become calls to the app's own endpoint). It writes liara.json "cron"; the next deploy applies it. If `documented` is false for the platform, say Liara's docs show an in-app scheduler there.
 
 ## 6. Prepare the code (minimal changes, explain each)
 

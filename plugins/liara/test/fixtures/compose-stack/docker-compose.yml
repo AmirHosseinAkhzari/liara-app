@@ -1,0 +1,36 @@
+services:
+  web:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgres://app:app@db:5432/app
+  db:
+    image: postgres:16
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  graph:
+    image: neo4j:5.24
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/localpassword
+    volumes:
+      - graphdata:/data
+  automation:
+    image: n8nio/n8n:1.70.0
+    ports:
+      - "5678:5678"
+  cache:
+    image: redis/redis-stack-server:7.4.0-v1
+    expose:
+      - "6379"
+    volumes:
+      - stackdata:/data
+  files:
+    image: minio/minio
+volumes:
+  pgdata:
+  graphdata:
+  stackdata:

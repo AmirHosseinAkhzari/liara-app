@@ -76,6 +76,17 @@ export function startMock() {
     }
     // ---- paas
     if (service === 'paas') {
+      if ((mm = p.match(/^\/v1\/projects\/([^/]+)\/disks$/)) && m === 'POST') {
+        const pr = state.projects[mm[1]];
+        if (!mine(pr)) return send(404, {});
+        if (pr.disks.some((d) => d.name === body.name)) return send(409, { message: 'disk exists' });
+        pr.disks.push({ name: body.name, size: Number(body.size), status: 'CREATED' });
+        return send(201, {});
+      }
+      if ((mm = p.match(/^\/v1\/projects\/([^/]+)\/disks$/)) && m === 'GET') {
+        const pr = Object.values(state.projects).find((x) => x && x._id === mm[1]);
+        return pr ? send(200, { disks: pr.disks }) : send(404, {});
+      }
       if ((mm = p.match(/^\/v1\/projects\/([^/]+)$/)) && m === 'DELETE') { if (!mine(state.projects[mm[1]])) return send(404, {}); delete state.projects[mm[1]]; return send(200, {}); }
       if (m === 'GET' && p === '/v2/teams') return send(200, { totalTeams: state.teams.length, teams: state.teams.map((t) => ({ _id: t._id, name: t.name, color: 'blue' })) });
       if (m === 'GET' && p === '/v1/projects') return send(200, { projects: Object.values(state.projects).filter(mine) });
@@ -91,7 +102,8 @@ export function startMock() {
         if (/g2$/.test(body.planID) && !body.network) return send(400, { message: 'g2_plan_unavailable' });
         if (state.privateNetworkFeature && !body.network) return send(400, { message: 'network_is_required' });
         state.createdProjects.push(body);
-        state.projects[body.name] = { _id: id('p'), project_id: body.name, type: body.platform, planID: body.planID, status: 'ACTIVE', envs: [], scale: 1, team: teamID };
+        const net = state.networks.find((n) => n._id === body.network);
+        state.projects[body.name] = { _id: id('p'), project_id: body.name, type: body.platform, planID: body.planID, bundlePlanID: body.bundlePlanID, status: 'ACTIVE', envs: [], scale: 1, team: teamID, disks: [], network: net ? { _id: net._id, name: net.name } : null };
         return send(200, {});
       }
       if ((mm = p.match(/^\/v1\/projects\/([^/]+)$/)) && m === 'GET') {

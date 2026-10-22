@@ -11,6 +11,9 @@ A Liara cloud assistant inside Claude. Say **"deploy this to Liara"** (or run `/
 | **Verify** | `verify_app` makes real HTTPS requests to the app, its health endpoints and custom domains, scans recent logs and checks required env vars. It says what could not be verified. |
 | **Diagnose and repair** | `diagnose` classifies failures from build logs, runtime logs, app state, project facts and the Liara status page (missing dependency, start script, runtime version, build, env vars, database, port, resources, third party, Liara config, code error, platform incident) with the evidence lines and a minimal fix. |
 | **Prices and billing** | Live plans for apps, databases, storage, mail, VPS and AI with fetch time and source; monthly estimates; balance of your account or team, spend estimate and runway, resources worth checking. |
+| **Docker services** | Services Liara has no managed product for (Neo4j, n8n, Meilisearch, Qdrant, Typesense, or any image from `docker-compose.yml`) run as their own Liara docker app in the app's private network: passwords generated, data on disks, connection env vars written into the app. Liara's ready-made apps are suggested when one exists. |
+| **Disks** | Finds what the app writes to disk (uploads, SQLite, service data), checks the plan's free space, creates the disk and mounts it via `liara.json` (Liara's file system is read-only). |
+| **Cron** | Turns the Laravel scheduler, `vercel.json` crons or your own jobs into Liara's cron (`liara.json` `"cron"`), applied by the deploy. |
 | **VPS** | Create (plan and OS checked against live lists, SSH keys), list, start/shutdown/stop/reboot, resize, delete. Root passwords are never shown. |
 | **Docs** | Search and read the official docs (about 1,200 pages, English or Persian queries) with links and official video courses. |
 | **Liara status** | Services and incidents from the official status page (liara.online); stale open incidents are flagged. |
@@ -59,6 +62,8 @@ A deploy asks whether to use your personal account or a team (only teams where y
 | `/liara:scan [path]` | Analysis only, changes nothing |
 | `/liara:verify [app]` | Real health checks, and diagnosis if something fails |
 | `/liara:connect <database\|storage\|mail\|dns\|ai> [app]` | Connect one service to an existing app |
+| `/liara:service <service or image> [app]` | Run Neo4j, n8n, a search engine or any image as its own Liara app |
+| `/liara:cron ["<schedule> <command>"]` | Schedule jobs with Liara's cron |
 | `/liara:price [product or workload]` | Live prices or a monthly estimate |
 | `/liara:billing` | Balance, estimated spend, resources worth checking |
 | `/liara:vps [create\|list\|…] [name]` | Create or manage a cloud VPS |
@@ -72,9 +77,9 @@ A deploy asks whether to use your personal account or a team (only teams where y
 
 ## MCP tools
 
-Read-only: `whoami`, `teams`, `accounts`, `scan_project`, `list_resources`, `plans`, `estimate_cost`, `billing`, `get_envs`, `release_status`, `app_logs`, `verify_app`, `diagnose`, `service_status`, `docs_search`, `docs_read`, `vps_list`, `github_autodeploy` (inspect, status), `write_report` (writes a local file).
-Ask first: `approve_plan`, `create_app`, `deploy`, `set_envs`, `app_action`, `connect_database`, `connect_storage`, `connect_mail`, `connect_dns`, `connect_ai`, `migrate_database`, `migrate_storage`, `create_vm`, `vm_action`, `delete_app`, `github_autodeploy` (setup), `logout`, `api` (anything but GET).
-`login` opens the browser. Run any tool from a shell (no dialogs there; changes return `confirmationRequired`):
+Read-only: `whoami`, `disks`, `teams`, `accounts`, `scan_project`, `list_resources`, `plans`, `estimate_cost`, `billing`, `get_envs`, `release_status`, `app_logs`, `verify_app`, `diagnose`, `service_status`, `docs_search`, `docs_read`, `vps_list`, `github_autodeploy` (inspect, status), `write_report` (writes a local file).
+Ask first: `approve_plan`, `create_app`, `deploy`, `deploy_service`, `connect_disk`, `set_envs`, `app_action`, `connect_database`, `connect_storage`, `connect_mail`, `connect_dns`, `connect_ai`, `migrate_database`, `migrate_storage`, `create_vm`, `vm_action`, `delete_app`, `github_autodeploy` (setup), `logout`, `api` (anything but GET).
+`set_cron` writes liara.json only (the deploy applies it). `login` opens the browser. Run any tool from a shell (no dialogs there; changes return `confirmationRequired`):
 
 ```bash
 node plugins/liara/bin/liara-tool.mjs scan_project '{"path":"."}'

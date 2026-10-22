@@ -5,6 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { dockerServicesFor } from './dockerservices.mjs';
+import { diskSuggestions, cronSuggestions } from './disks.mjs';
 
 // From the official Liara CLI (lib/utils/get-supported-versions.js, @liara/cli 9.4.7).
 export const SUPPORTED_VERSIONS = {
@@ -290,7 +292,7 @@ export function detectRuntime(root, platform) {
   return runtimeVersion(root, platform, { csproj });
 }
 
-export function analyzeExtras(root, { stack, deps, files, port, platform }) {
+export function analyzeExtras(root, { stack, deps, files, port, platform, hints }) {
   const runtime = runtimeVersion(root, platform, stack);
   const extras = {
     runtime,
@@ -304,12 +306,18 @@ export function analyzeExtras(root, { stack, deps, files, port, platform }) {
     git: gitInfo(root),
     localOnlyBinding: localOnlyBinding(root, files),
   };
+  extras.dockerServices = dockerServicesFor(root, { deps });
+  extras.diskSuggestions = diskSuggestions(root, { platform, files, hints });
+  extras.cronSuggestions = cronSuggestions(root, { platform, port, background: extras.background });
   const warnings = [];
   if (runtime?.status === 'NOT supported by Liara') warnings.push(`${runtime.runtime} ${runtime.version} (${runtime.source}) is not a version Liara supports (${runtime.supported.join(', ')}). Pick a supported one in liara.json "${platform}": { "${runtime.liaraJsonKey}": "…" }.`);
   if (extras.localOnlyBinding.length) warnings.push(`The server only listens on localhost in ${extras.localOnlyBinding.slice(0, 3).join(', ')}. On Liara it must listen on 0.0.0.0 (all interfaces) or it is unreachable.`);
   if (extras.background.workers.length) warnings.push(`Background processes besides the web server (${extras.background.workers.join('; ')}): Liara runs one process per app, so each needs its own app or must run inside the web process.`);
   if (extras.background.queues.length) warnings.push(`Uses a job queue (${extras.background.queues.join(', ')}): make sure a worker runs on Liara (in the web process or as a separate app) and the queue backend (often Redis) is connected.`);
   if (extras.background.cron.length) warnings.push(`Scheduled jobs (${extras.background.cron.join(', ')}): they run only while the app runs; see the Liara cron job guide for your platform.`);
+  for (const d of extras.dockerServices) warnings.push(`${d.image} (${d.from}) has no managed Liara product: run it as its own Liara docker app with deploy_service${d.catalog ? ` (service "${d.catalog}")` : ''}${d.oneClick ? `, or use Liara's ready-made app (${d.oneClick})` : ''}; its data needs a disk.`);
+  for (const d of extras.diskSuggestions) warnings.push(`Files are written to ${d.mountTo}/ (${d.reasons.join('; ')}). Liara's file system is read-only: add a disk mounted at ${d.mountTo} (connect_disk) or use Object Storage.`);
+  for (const c of extras.cronSuggestions) warnings.push(`Scheduled job (${c.why}): add it to Liara cron with set_cron: "${c.schedule} ${c.command}".`);
   if (port && extras.docker?.exposes.length && platform === 'docker' && !extras.docker.exposes.includes(port)) warnings.push(`Dockerfile EXPOSEs ${extras.docker.exposes.join(', ')} but the release port is ${port}.`);
   return { extras, warnings };
 }
