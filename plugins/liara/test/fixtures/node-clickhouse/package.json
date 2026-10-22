@@ -1,0 +1,7 @@
+{
+  "name": "events-api",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "dependencies": { "@clickhouse/client": "^1.5.0", "amqplib": "^0.10.4", "express": "^4.21.0" }
+}

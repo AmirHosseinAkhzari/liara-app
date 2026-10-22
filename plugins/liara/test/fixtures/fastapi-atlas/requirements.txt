@@ -1,0 +1,5 @@
+fastapi==0.110
+uvicorn[standard]
+motor>=3
+redis
+openai

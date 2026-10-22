@@ -1,0 +1,28 @@
+{
+  "name": "liara",
+  "version": "0.5.0",
+  "description": "Liara cloud assistant: analyze a project, deploy it with live prices and one approval, connect Liara databases, storage, mail, DNS and AI, verify with real checks, diagnose failures, manage VPS, check billing and Liara status, search the official docs, set up GitHub auto-deploy, and write a static HTML report.",
+  "author": {
+    "name": "AmirHossein"
+  },
+  "license": "MIT",
+  "keywords": [
+    "ai",
+    "billing",
+    "ci",
+    "database",
+    "deploy",
+    "dns",
+    "docs",
+    "github",
+    "iran",
+    "liara",
+    "mail",
+    "paas",
+    "pricing",
+    "report",
+    "s3",
+    "status",
+    "vps"
+  ]
+}

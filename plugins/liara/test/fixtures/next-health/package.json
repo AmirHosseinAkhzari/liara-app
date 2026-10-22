@@ -1,0 +1,1 @@
+{ "name": "shop-next", "engines": { "node": "12.x" }, "scripts": { "build": "next build", "start": "next start" }, "dependencies": { "next": "15.0.0", "react": "18.3.1" } }

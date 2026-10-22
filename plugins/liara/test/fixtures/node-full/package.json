@@ -1,0 +1,8 @@
+{
+  "name": "orders-api",
+  "version": "1.0.0",
+  "engines": { "node": ">=20.11" },
+  "scripts": { "start": "node src/server.js", "build": "tsc -p .", "test": "jest" },
+  "dependencies": { "express": "^4.21.0", "bullmq": "^5.12.0", "node-cron": "^3.0.3", "socket.io": "^4.8.0", "ioredis": "^5.4.1" },
+  "devDependencies": { "jest": "^29.7.0" }
+}

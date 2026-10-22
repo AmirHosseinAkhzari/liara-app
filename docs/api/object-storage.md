@@ -687,7 +687,7 @@ Declare Buckets for access key
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `buckets` | object[] |  |  |
+| `buckets` | string[] |  | Bucket names the key can access. The published spec says `object[]`, but the live API rejects objects with `"buckets[0]" must be a string`. |
 | `description` | string |  |  |
 
 Example:
@@ -695,7 +695,7 @@ Example:
 ```json
 {
   "buckets": [
-    {}
+    "my-bucket"
   ],
   "description": "string"
 }
@@ -742,7 +742,7 @@ Example:
 curl -X POST "https://storage-service.liara.ir/api/v1/keys" \
   -H "Authorization: Bearer $LIARA_API_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"buckets": [{}], "description": "string"}'
+  -d '{"buckets": ["my-bucket"], "description": "string"}'
 ```
 
 ---
@@ -804,7 +804,7 @@ Declare Buckets for access key
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `buckets` | object[] |  |  |
+| `buckets` | string[] |  | Bucket names the key can access (replaces the current list). Same schema as Create Keys, so plain names are expected here too (not verified live). |
 | `description` | string |  |  |
 
 Example:
@@ -812,7 +812,7 @@ Example:
 ```json
 {
   "buckets": [
-    {}
+    "my-bucket"
   ],
   "description": "string"
 }
@@ -853,7 +853,7 @@ Example:
 curl -X PATCH "https://storage-service.liara.ir/api/v1/keys/{key}" \
   -H "Authorization: Bearer $LIARA_API_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"buckets": [{}], "description": "string"}'
+  -d '{"buckets": ["my-bucket"], "description": "string"}'
 ```
 
 ---

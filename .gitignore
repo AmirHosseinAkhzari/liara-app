@@ -4,3 +4,6 @@
 .DS_Store
 __pycache__/
 .venv/
+
+# Fake env files used by the Liara plugin tests
+!plugins/liara/test/fixtures/**/.env*
