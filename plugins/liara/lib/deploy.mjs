@@ -40,6 +40,11 @@ function gitInfo(root) {
 // g2 plans run inside a private network (Liara answers 400 g2_plan_unavailable without one).
 export const needsNetwork = (planID) => /(^|-)g2$/.test(String(planID || ''));
 
+// Plans Liara creates new apps on: g2 plans (and free), as the Liara CLI offers them. Older
+// g1 plans (ir-*, standard-base, …) are still listed as available but creating an app on one
+// fails with 400 "bundlePlanID" is required (seen live on 2026-10-22).
+export const forNewApps = (planID) => planID === 'free' || needsNetwork(planID);
+
 // Monthly price in Toman: displayPrice when given, else the hourly price × 720 (as the Liara CLI shows it).
 export const monthly = (p) => (p?.displayPrice ?? p?.monthlyPrice ?? (typeof p?.price === 'number' ? Math.round(p.price * 720) : typeof p?.hourlyPrice === 'number' ? Math.round(p.hourlyPrice * 720) : null));
 
@@ -71,8 +76,9 @@ export async function getPlans(api) {
     }
     return out;
   };
+  const newOnly = (obj) => Object.fromEntries(Object.entries(obj).filter(([id]) => forNewApps(id)));
   return {
-    apps: describe(plans.projects, 'projectBundlePlans'),
+    apps: newOnly(describe(plans.projects, 'projectBundlePlans')),
     databases: describe(plans.databases, 'databaseBundlePlans'),
     databaseVersions: me.databaseVersions,
     defaultDatabaseVersions: me.defaultDatabaseVersions,
@@ -80,7 +86,8 @@ export async function getPlans(api) {
     mail: describe(plans.mail),
     notes: [
       'Prices are Toman per month. A plan with "bundles" also needs one bundle (bundlePlanID), which costs extra; show the total before creating.',
-      'Plans with needsNetwork run in a private network; the app and its databases must share it.',
+      'Plans with needsNetwork run in a private network; the app and its databases must share it. Accounts on private networking need one for every new resource.',
+      'Only g2 (and free) app plans are listed: Liara creates new apps on those, like the Liara CLI.',
     ],
   };
 }
@@ -151,6 +158,9 @@ export async function createApp(api, { app, platform, planID, bundlePlanID, netw
   if (!planID) {
     const plans = await getPlans(api).catch(() => null);
     throw new LiaraError(`App "${app}" does not exist. Pass planID to create it (see the plans tool for prices). Available app plans: ${plans ? Object.keys(plans.apps || {}).join(', ') : 'see liara plans tool'}`);
+  }
+  if (!forNewApps(planID) && !bundlePlanID) {
+    throw new LiaraError(`Plan "${planID}" is an older plan that Liara no longer creates new apps on (it asks for a bundle that the plan list does not offer). Pick a g2 plan such as small-g2 with a bundle (see the plans tool), like the Liara CLI does.`, { status: 400 });
   }
   const bundle = await checkBundle(api, { planID, bundlePlanID, group: 'projectBundlePlans' });
   const networkID = await resolveNetwork(api, { planID, network, createNetwork }, steps);

@@ -4,7 +4,7 @@
 //   GET ai.liara.ir/v2/models (public)  AI models with per-token prices
 // Prices are Toman (AI: per token, unit as the API lists it). Results are cached for
 // 10 minutes per account and always say when they were fetched. Nothing is hardcoded.
-import { bundlesOf, needsNetwork, monthly } from './deploy.mjs';
+import { bundlesOf, needsNetwork, monthly, forNewApps } from './deploy.mjs';
 
 const TTL = 10 * 60_000;
 const cache = new Map();
@@ -95,8 +95,11 @@ export async function productPlans(api, product) {
     ...(typeof p.price === 'number' ? { hourlyToman: p.price } : {}),
     ...(needsNetwork(id) ? { needsNetwork: true } : {}),
     ...(bundleGroup && bundlesOf(c.plans, bundleGroup, id) ? { bundles: bundlesOf(c.plans, bundleGroup, id) } : {}),
+    ...(product === 'apps' && !forNewApps(id) ? { forNewApps: false } : {}),
   }));
-  return { product, fetchedAt: c.fetchedAt, source: c.source, plans: sortByPrice(plans), docs: DOCS[product] };
+  // New apps go on g2 plans; older plans are listed after them for existing resources.
+  const sorted = sortByPrice(plans).sort((a, b) => (a.forNewApps === false) - (b.forNewApps === false));
+  return { product, fetchedAt: c.fetchedAt, source: c.source, plans: sorted, docs: DOCS[product], ...(product === 'apps' ? { note: 'Plans with forNewApps: false are older plans that existing apps may still use; Liara creates new apps on g2 plans (with a bundle).' } : {}) };
 }
 
 const sortByPrice = (list) => list.sort((a, b) => (a.monthlyToman ?? Infinity) - (b.monthlyToman ?? Infinity));

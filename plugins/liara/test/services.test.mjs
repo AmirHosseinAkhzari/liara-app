@@ -114,11 +114,18 @@ test('accounts on private networking put every new app in the network, not only 
   mock.state.privateNetworkFeature = true;
   mock.state.projects['plain-plan'] = undefined;
   try {
-    const r = await callTool('create_app', { app: 'plain-plan', platform: 'node', planID: 'db-small' });
+    const r = await callTool('create_app', { app: 'plain-plan', platform: 'node', planID: 'free' });
     assert.equal(r.created, true);
     assert.equal(mock.state.createdProjects.at(-1).network, 'net1');
     assert.match(r.steps.join(), /using private network test-net \(this account uses private networks for all new resources\)/);
   } finally {
     mock.state.privateNetworkFeature = false;
   }
+});
+
+test('new apps go on g2 plans: older plans are refused early with a clear reason', async () => {
+  mock.state.balance = 1_000_000;
+  await assert.rejects(callTool('create_app', { app: 'old-plan', platform: 'node', planID: 'ir-small' }), /older plan that Liara no longer creates new apps on/);
+  const p = await callTool('plans', {});
+  assert.ok(Object.keys(p.apps).every((id) => /-g2$|^free$/.test(id)), Object.keys(p.apps).join(','));
 });

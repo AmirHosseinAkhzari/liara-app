@@ -100,6 +100,8 @@ export function createClient({ cwd = process.cwd(), token, teamID } = {}) {
     }
     if (!res.ok) {
       if (res.status === 401) throw new LiaraError(`token from ${auth.source} rejected`, { status: 401, body: data, method, url: url.pathname });
+      if (res.status === 400 && /"bundlePlanID" is required/.test(JSON.stringify(data))) throw new LiaraError(`Liara refused ${method} ${url.pathname}: this plan needs a feature bundle (bundlePlanID). New apps go on g2 plans with a bundle; see the plans tool for the choices and prices.`, { status: 400, body: data, method, url: url.pathname });
+      if (res.status === 400 && /network_is_required/.test(JSON.stringify(data))) throw new LiaraError(`Liara refused ${method} ${url.pathname}: a private network is required for new resources on this account. Pass network (or createNetwork after asking the user).`, { status: 400, body: data, method, url: url.pathname });
       if (res.status === 402) throw new LiaraError(`Liara refused ${method} ${url.pathname}: not enough balance on this account${auth.teamID ? ' (team)' : ''}. Add credit at https://console.liara.ir/ or choose another account.`, { status: 402, body: data, method, url: url.pathname });
       const detail = typeof data === 'object' && data ? data.message || data.error || JSON.stringify(data) : text;
       throw new LiaraError(`${method} ${url.pathname} → ${res.status}: ${String(detail).slice(0, 500)}`, {
