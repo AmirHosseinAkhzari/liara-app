@@ -227,7 +227,7 @@ function dockerInfo(root) {
   };
 }
 
-function gitInfo(root) {
+export function gitInfo(root) {
   const git = (...args) => {
     try {
       return execFileSync('git', ['-C', root, ...args], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).toString().trim();
