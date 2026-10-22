@@ -11,8 +11,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const DONE_OK = /^(READY|SUCCEEDED|SUCCESS|DEPLOYED|RUNNING)$/i;
 const DONE_FAIL = /^(FAILED|FAIL|ERROR|CANCELED|CANCELLED|TIMEOUT|REJECTED)$/i;
 
+// LIARA_APP_URL_TEMPLATE exists for tests only (points apps at a local server).
 export function appUrl(app) {
-  return `https://${app}.liara.run`;
+  return (process.env.LIARA_APP_URL_TEMPLATE || 'https://{app}.liara.run').replace('{app}', app);
 }
 
 function gitInfo(root) {
@@ -179,6 +180,8 @@ export async function releaseStatus(api, { app, releaseID, wait = 0 }) {
     finished: DONE_OK.test(state) || failed,
     success: DONE_OK.test(state),
     isCurrentRelease: release ? release._id === current : undefined,
+    port: release?.port,
+    type: release?.type,
     createdAt: release?.createdAt,
     finishedAt: release?.finishedAt,
     url: appUrl(app),

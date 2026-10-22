@@ -6,7 +6,7 @@ export function startMock() {
   const state = {
     projects: {}, databases: {}, buckets: {}, keys: [], zones: {}, records: {}, mails: [], workspaces: [], aiKeys: [], domains: [],
     uploads: [], releases: {}, requests: [], calls: [],
-    networks: [{ _id: 'net1', name: 'test-net' }], createdProjects: [],
+    networks: [{ _id: 'net1', name: 'test-net' }], createdProjects: [], logs: {}, buildLogs: {},
     // Teams the test user belongs to: owner of one, view-only in the other.
     teams: [
       { _id: 'aaaaaaaaaaaaaaaaaaaaaaa2', name: 'تیم ۲', role: { name: 'مالک', permissions: [{ name: 'manage', type: 'project' }, { name: 'create', type: 'project' }, { name: 'create', type: 'database' }] } },
@@ -110,7 +110,8 @@ export function startMock() {
         const list = state.releases[mm[1]] || [];
         return send(200, { total: list.length, currentRelease: list[0]?._id, releases: list });
       }
-      if ((mm = p.match(/^\/v1\/projects\/([^/]+)\/logs$/))) return send(200, [{ type: 'stdout', datetime: '2026-10-21T10:00:00Z', message: 'listening on 3000' }]);
+      if ((mm = p.match(/^\/v1\/projects\/([^/]+)\/logs$/))) return send(200, (state.logs?.[mm[1]] || ['listening on 3000']).map((message) => ({ type: 'stdout', datetime: '2026-10-21T10:00:00Z', message })));
+      if ((mm = p.match(/^\/v2\/releases\/([^/]+)\/build-logs$/))) return state.buildLogs?.[mm[1]] ? send(200, state.buildLogs[mm[1]].map((line) => ({ line: `${line}\n` }))) : send(404, {});
       if (m === 'POST' && p === '/v1/domains') {
         const d = { _id: id('d'), name: body.name, project: { project_id: body.project }, CNameRecord: `${body.project}.liara.run` };
         state.domains.push(d);

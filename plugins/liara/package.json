@@ -11,7 +11,7 @@
     "liara-tool": "bin/liara-tool.mjs"
   },
   "scripts": {
-    "test": "node --import ./test/setup.mjs --test --test-timeout=60000 test/detect.test.mjs test/e2e.test.mjs test/login.test.mjs test/migrate.test.mjs test/teams.test.mjs test/services.test.mjs test/consent.test.mjs",
+    "test": "node --import ./test/setup.mjs --test --test-timeout=60000 test/detect.test.mjs test/e2e.test.mjs test/login.test.mjs test/migrate.test.mjs test/teams.test.mjs test/services.test.mjs test/consent.test.mjs test/verify.test.mjs",
     "mcp": "node server/index.mjs"
   },
   "license": "MIT"
