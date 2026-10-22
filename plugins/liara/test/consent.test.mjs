@@ -222,6 +222,12 @@ test('LIARA_DIALOGS=off always asks in chat', async () => {
     const u = user('accept');
     const r = await callTool('create_app', { app: 'chat-only', platform: 'node', planID: 'small-g2' }, { elicit: u.elicit });
     assert.equal(r.confirmationRequired, true);
+    // approve_plan asks from inside its handler: the audit log still says it is waiting
+    const plan = await callTool('approve_plan', { title: 'x', operations: [{ tool: 'set_envs', target: 'chat-only', summary: 'Set env vars' }] }, { elicit: u.elicit });
+    assert.equal(plan.confirmationRequired, true);
+    const last = JSON.parse(fs.readFileSync(AUDIT_FILE, 'utf8').trim().split('\n').at(-1));
+    assert.equal(last.tool, 'approve_plan');
+    assert.equal(last.outcome, 'waiting for confirmation');
     assert.equal(u.seen.length, 0);
   } finally {
     delete process.env.LIARA_DIALOGS;

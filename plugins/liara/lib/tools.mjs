@@ -1069,7 +1069,7 @@ export async function callTool(name, args = {}, { cwd = process.cwd(), elicit = 
   try {
     const result = await tool.handler(args, api, ctx);
     const billed = consent?.risk === 'billable' ? { plan: consent.plan, bundle: consent.bundle, kind: PRICE_KIND[name] } : {};
-    record({ tool: name, risk, account, target: consent?.target || args.app || args.bucket || args.domain || args.name, consent: via, dialog: ctx.dialog, outcome: result?.cancelled ? 'declined' : result?.success === false ? 'failed' : result?.created === false ? 'reused' : 'done', result, started, ...billed });
+    record({ tool: name, risk, account, target: consent?.target || args.app || args.bucket || args.domain || args.name, consent: via, dialog: ctx.dialog, outcome: result?.cancelled ? 'declined' : result?.confirmationRequired ? 'waiting for confirmation' : result?.success === false ? 'failed' : result?.created === false ? 'reused' : 'done', result, started, ...billed });
     return result;
   } catch (err) {
     // A resource "not found" is often just in another account: say where we looked.
