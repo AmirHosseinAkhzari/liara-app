@@ -3,7 +3,7 @@
 import readline from 'node:readline';
 import { TOOLS, callTool } from '../lib/tools.mjs';
 
-const SERVER = { name: 'liara', version: '0.2.0' };
+const SERVER = { name: 'liara', version: '0.3.0' };
 const SUPPORTED = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
 const send = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);

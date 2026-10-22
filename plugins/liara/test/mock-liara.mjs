@@ -5,7 +5,12 @@ import zlib from 'node:zlib';
 export function startMock() {
   const state = {
     projects: {}, databases: {}, buckets: {}, keys: [], zones: {}, records: {}, mails: [], workspaces: [], aiKeys: [], domains: [],
-    uploads: [], releases: {}, requests: [],
+    uploads: [], releases: {}, requests: [], calls: [],
+    // Teams the test user belongs to: owner of one, view-only in the other.
+    teams: [
+      { _id: 'aaaaaaaaaaaaaaaaaaaaaaa2', name: 'تیم ۲', role: { name: 'مالک', permissions: [{ name: 'manage', type: 'project' }, { name: 'create', type: 'project' }, { name: 'create', type: 'database' }] } },
+      { _id: 'bbbbbbbbbbbbbbbbbbbbbbb3', name: 'Viewers', role: { name: 'viewer', permissions: [{ name: 'view', type: 'project' }] } },
+    ],
   };
   let n = 0;
   const id = (p) => `${p}${++n}`;
@@ -25,6 +30,9 @@ export function startMock() {
     let body = null;
     if ((req.headers['content-type'] || '').includes('json') && raw.length) body = JSON.parse(raw.toString());
     state.requests.push(`${m} ${service}${p}`);
+    const teamID = url.searchParams.get('teamID') || null;
+    state.calls.push({ call: `${m} ${service}${p}`, teamID });
+    const mine = (pr) => pr && (pr.team || null) === teamID;
     const send = (status, data) => {
       res.writeHead(status, { 'content-type': 'application/json' });
       res.end(data === undefined ? '' : JSON.stringify(data));
@@ -34,7 +42,10 @@ export function startMock() {
     let mm;
     // ---- account
     if (service === 'account' && p === '/v1/me') {
+      const t = state.teams.find((x) => x._id === teamID);
+      if (teamID && !t) return send(403, { message: 'not a member of this team' });
       return send(200, {
+        ...(t ? { team: { _id: t._id, isTeam: true, teamName: t.name, teamMemberRole: t.role } } : {}),
         user: { fullname: 'Test User', email: 't@example.com', isVerified: true, storage: { secretKey: 'should-not-leak' } },
         plans: { projects: { 'small-g2': { available: true, CPU: 0.5, RAM: 512 }, old: { available: false } }, databases: { 'db-small': { available: true } }, objectStorage: { 'storage-20': {} }, mail: { 'mail-free': {} } },
         databaseVersions: { postgres: ['16', '17'] }, defaultDatabaseVersions: { postgres: '17' },
@@ -42,23 +53,25 @@ export function startMock() {
     }
     // ---- paas
     if (service === 'paas') {
-      if (m === 'GET' && p === '/v1/projects') return send(200, { projects: Object.values(state.projects) });
+      if (m === 'GET' && p === '/v2/teams') return send(200, { totalTeams: state.teams.length, teams: state.teams.map((t) => ({ _id: t._id, name: t.name, color: 'blue' })) });
+      if (m === 'GET' && p === '/v1/projects') return send(200, { projects: Object.values(state.projects).filter(mine) });
       if (m === 'POST' && p === '/v1/projects') {
         if (state.projects[body.name]) return send(409, { message: 'exists' });
-        state.projects[body.name] = { _id: id('p'), project_id: body.name, type: body.platform, planID: body.planID, status: 'ACTIVE', envs: [], scale: 1 };
+        state.projects[body.name] = { _id: id('p'), project_id: body.name, type: body.platform, planID: body.planID, status: 'ACTIVE', envs: [], scale: 1, team: teamID };
         return send(200, {});
       }
       if ((mm = p.match(/^\/v1\/projects\/([^/]+)$/)) && m === 'GET') {
         const pr = state.projects[mm[1]];
-        return pr ? send(200, { project: pr }) : send(404, { message: 'App does not exists.' });
+        return mine(pr) ? send(200, { project: pr }) : send(404, { message: 'App does not exists.' });
       }
       if (m === 'POST' && p === '/v1/projects/update-envs') {
         const pr = state.projects[body.project];
-        if (!pr) return send(404, {});
+        if (!mine(pr)) return send(404, {});
         pr.envs = body.variables.map((v) => ({ key: v.key, value: v.value, encrypted: false, _id: id('e') }));
         return send(200, { message: 'ok' });
       }
       if ((mm = p.match(/^\/v2\/projects\/([^/]+)\/sources$/)) && m === 'POST') {
+        if (!mine(state.projects[mm[1]])) return send(404, { message: 'App does not exists.' });
         // pull the gz part out of the multipart body and list the tar entries
         const boundary = (req.headers['content-type'] || '').split('boundary=')[1];
         const start = raw.indexOf(Buffer.from([0x1f, 0x8b]));
@@ -98,13 +111,13 @@ export function startMock() {
     if (service === 'dbaas') {
       if (m === 'POST' && p === '/v1/databases') {
         const dbid = id('db');
-        state.databases[dbid] = { _id: dbid, id: dbid, hostname: body.hostname, type: body.type, planID: body.planID, version: body.version, status: 'RUNNING', publicNetwork: false, node: { host: 'db-node.liara.ir' }, port: 31000, internalPort: 5432, root_password: 'p@ss/word', username: 'root' };
+        state.databases[dbid] = { _id: dbid, id: dbid, hostname: body.hostname, type: body.type, planID: body.planID, version: body.version, status: 'RUNNING', publicNetwork: false, node: { host: 'db-node.liara.ir' }, port: 31000, internalPort: 5432, root_password: 'p@ss/word', username: 'root', team: teamID };
         return send(200, { databaseID: dbid });
       }
-      if (m === 'GET' && p === '/v1/databases') return send(200, { databases: Object.values(state.databases) });
+      if (m === 'GET' && p === '/v1/databases') return send(200, { databases: Object.values(state.databases).filter(mine) });
       if ((mm = p.match(/^\/v1\/databases\/([^/]+)$/)) && m === 'GET') {
         const d = state.databases[mm[1]];
-        return d ? send(200, { database: d }) : send(404, {});
+        return mine(d) ? send(200, { database: d }) : send(404, {});
       }
     }
     // ---- storage

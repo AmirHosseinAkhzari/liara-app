@@ -5,16 +5,21 @@ description: Deploy a project to Liara (Iranian cloud PaaS) end to end. Detects 
 
 # Deploy to Liara
 
-You have the `liara` MCP tools (login, accounts, logout, whoami, scan_project, list_resources, plans, create_app, connect_database, connect_storage, connect_mail, connect_dns, connect_ai, migrate_database, migrate_storage, set_envs, get_envs, deploy, release_status, app_logs, app_action, api).
+You have the `liara` MCP tools (login, accounts, logout, whoami, teams, scan_project, list_resources, plans, create_app, connect_database, connect_storage, connect_mail, connect_dns, connect_ai, migrate_database, migrate_storage, set_envs, get_envs, deploy, release_status, app_logs, app_action, api).
 Secrets stay inside the tools: never print, echo or `cat` env files or tokens, and never pass secret values through `set_envs.vars` — use `fromEnvFile` + `keys`.
 
 Keep the user informed with short updates. Ask questions with AskUserQuestion, batched (several questions in one call), recommended option first.
 
 ## 1. Preflight
 
-1. `whoami`. If it says not logged in, or every token was rejected: say "Opening the Liara login page in your browser — sign in there and come back", call `login`, and call it again while it returns `waiting: true` (show `loginUrl` if the browser didn't open). Then `whoami` again. Never ask for a token in chat. For team resources the user can set `LIARA_TEAM_ID`; for several accounts use `accounts`.
-2. `scan_project` with the project path. If `liara.json` names an app that exists (`list_resources` → apps), pass `app` so its current Liara env vars count as production.
-3. `list_resources` once, to reuse existing apps/databases/buckets/zones/workspaces instead of creating duplicates.
+1. `whoami`. If it says not logged in, or every token was rejected: say "Opening the Liara login page in your browser — sign in there and come back", call `login`, and call it again while it returns `waiting: true` (show `loginUrl` if the browser didn't open). Then `whoami` again. Never ask for a token in chat. For several saved logins use `accounts`.
+2. **Personal account or a team.** `whoami` returns `workingIn` (where calls go now, and why) and `teams` (each with `role`, `canDeploy`).
+   - If the user named a team ("deploy to team 2", "در تیم ۲"), call `teams {use: "<that name>"}` (names match with Persian or Latin digits).
+   - Else if `chooseAccount` is true (the account is in teams and nothing is chosen yet), ask once with AskUserQuestion: *"Deploy to your personal account or a team?"*. Options: **Personal account (Recommended)**, then one per team where `canDeploy` is true, labeled with the team name and role (at most 3 teams; more go to "Other"). Then call `teams {use: <team id>}`, or `teams {use: "personal"}`.
+   - Else (`workingIn.source` is liara.json "team-id" or LIARA_TEAM_ID) say in one line where you're deploying, e.g. "Deploying to team «تیم ۲» (saved in liara.json)", and go on. The user can switch any time with `teams {use}`.
+   Everything after this (apps, databases, buckets, DNS, mail, AI, env vars, deploys) goes to that account, and its cost goes to that account's balance. A team where `canDeploy` is false can't be used: say the user's role there and ask again. The deploy saves the choice in liara.json ("team-id", same as `liara deploy`), so re-deploys go to the same place.
+3. `scan_project` with the project path. If `liara.json` names an app that exists (`list_resources` → apps), pass `app` so its current Liara env vars count as production.
+4. `list_resources` once (in the chosen account), to reuse existing apps/databases/buckets/zones/workspaces instead of creating duplicates.
 
 ## 2. Show what you found
 
@@ -79,8 +84,8 @@ See [reference/platforms.md](reference/platforms.md). Typical fixes: listen on t
 
 ## 8. Final report
 
-Lead with the result (live URL or what blocks it). Then: resources created (with plans), services switched and data transferred (counts), env vars set (names only), code changes, and what the user must still do (nameservers, mail DNS verification, SSL, deleting old providers only after they've verified Liara). Never delete anything at the old provider.
+Lead with the result (live URL or what blocks it) and the account it went to (personal or the team's name). Then: resources created (with plans), services switched and data transferred (counts), env vars set (names only), code changes, and what the user must still do (nameservers, mail DNS verification, SSL, deleting old providers only after they've verified Liara). Never delete anything at the old provider.
 
 ## Re-deploys
 
-If `liara.json` exists and the app is on Liara, a plain "deploy" request means: scan quickly for new env keys the code reads that Liara lacks (`missingEnvKeys` vs `get_envs`), then `deploy`. Don't redo provisioning.
+If `liara.json` exists and the app is on Liara, a plain "deploy" request means: scan quickly for new env keys the code reads that Liara lacks (`missingEnvKeys` vs `get_envs`), then `deploy`. Don't redo provisioning. It goes to the account in liara.json ("team-id", or personal when absent) unless the user asks for another one.

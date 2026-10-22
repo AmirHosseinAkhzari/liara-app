@@ -34,8 +34,11 @@ export class LiaraError extends Error {
   }
 }
 
+// teamID: a team ID acts in that team, null forces the personal account, and undefined
+// keeps the default (LIARA_TEAM_ID from the environment or the project's .env, if set).
 export function createClient({ cwd = process.cwd(), token, teamID } = {}) {
-  const candidates = token ? [{ token, teamID, source: 'argument' }] : authCandidates(cwd);
+  const base = token ? [{ token, source: 'argument' }] : authCandidates(cwd);
+  const candidates = teamID === undefined ? base : base.map((c) => ({ ...c, teamID: teamID || undefined }));
   const usable = () => candidates.filter((c) => !rejected.has(c.token));
 
   async function request(service, method, path, opts = {}) {
@@ -114,6 +117,8 @@ export function createClient({ cwd = process.cwd(), token, teamID } = {}) {
       return { source: a?.source || null, teamID: a?.teamID, hasToken: Boolean(a), account: a?.account };
     },
     request,
+    // Same login, different account: a team ID, or null for the personal account.
+    withTeam: (id) => createClient({ cwd, token, teamID: id }),
     get: (s, p, o) => request(s, 'GET', p, o),
     post: (s, p, body, o) => request(s, 'POST', p, { ...o, body }),
     patch: (s, p, body, o) => request(s, 'PATCH', p, { ...o, body }),

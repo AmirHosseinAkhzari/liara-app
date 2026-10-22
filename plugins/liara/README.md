@@ -46,14 +46,23 @@ Other ways, checked in this order (a rejected token is skipped automatically):
 2. `LIARA_API_TOKEN` in the project's `.env.liara`, `.env.local` or `.env` (keep it gitignored)
 3. the browser login (`/liara:login` or `liara login`)
 
-Set `LIARA_TEAM_ID` to work on a team's resources. `LIARA_S3_ENDPOINT` overrides the object storage endpoint (default `https://storage.c2.liara.space`).
+`LIARA_S3_ENDPOINT` overrides the object storage endpoint (default `https://storage.c2.liara.space`).
+
+## Teams
+
+If your account is in Liara teams, a deploy asks first: **your personal account, or one of your teams?** It lists each team with your role, and only offers teams where your role may deploy. You can also say "deploy to team 2" or run `/liara:team`.
+
+Everything after that goes to the chosen account: the app, databases, buckets, DNS, mail, AI workspace, env vars and the deploy itself. Costs go to that account's balance. The deploy saves the team in the project's `liara.json` as `"team-id"`, the same key `liara init` and `liara deploy` use, so later deploys from the plugin or the CLI go to the same team.
+
+Where calls go, in order: a `team` argument on a single call, the choice made with `/liara:team` (or the `teams` tool) in this session, `"team-id"` in `liara.json`, the `LIARA_TEAM_ID` environment variable, and otherwise the personal account.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `/liara:login [account]` | Browser login (or switch saved account) |
-| `/liara:deploy [app] [path]` | Full flow: scan → connect services → deploy |
+| `/liara:deploy [app] [path] [team]` | Full flow: choose account → scan → connect services → deploy |
+| `/liara:team [name\|personal]` | List your teams and choose where to work |
 | `/liara:scan [path]` | Report only, changes nothing |
 | `/liara:connect <database\|storage\|mail\|dns\|ai> [app]` | Connect one service to an existing app |
 | `/liara:status [app]` | Latest release, logs, env var names |
@@ -61,7 +70,7 @@ Set `LIARA_TEAM_ID` to work on a team's resources. `LIARA_S3_ENDPOINT` overrides
 
 ## MCP tools
 
-`login`, `accounts`, `logout`, `whoami`, `scan_project`, `list_resources`, `plans`, `create_app`, `deploy`, `release_status`, `app_logs`, `app_action`, `get_envs`, `set_envs`, `connect_database`, `connect_storage`, `connect_mail`, `connect_dns`, `connect_ai`, `migrate_database`, `migrate_storage`, `api` (any endpoint from [developers.liara.ir](https://developers.liara.ir); local copy in [docs/api](../../docs/api/README.md)).
+`login`, `accounts`, `logout`, `whoami`, `teams`, `scan_project`, `list_resources`, `plans`, `create_app`, `deploy`, `release_status`, `app_logs`, `app_action`, `get_envs`, `set_envs`, `connect_database`, `connect_storage`, `connect_mail`, `connect_dns`, `connect_ai`, `migrate_database`, `migrate_storage`, `api` (any endpoint from [developers.liara.ir](https://developers.liara.ir); local copy in [docs/api](../../docs/api/README.md)).
 
 Run any tool from a shell:
 

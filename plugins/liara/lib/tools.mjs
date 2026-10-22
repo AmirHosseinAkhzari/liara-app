@@ -5,6 +5,7 @@ import { deploy, releaseStatus, appLogs, getPlans, getApp, createApp, writeLiara
 import { getEnvs, setEnvs, connectDatabase, connectStorage, connectMail, connectDns, connectAi } from './services.mjs';
 import { migrateDatabase, migrateStorage } from './migrate.mjs';
 import { browserLogin, logout, useAccount, readAuthFile, AUTH_FILE } from './login.mjs';
+import { listTeams, resolveTeam, setChosenTeam, teamContext, describeContext, liaraJsonTeam } from './teams.mjs';
 import path from 'node:path';
 
 const str = (description, extra = {}) => ({ type: 'string', description, ...extra });
@@ -57,16 +58,51 @@ export const TOOLS = [
   },
   {
     name: 'whoami',
-    description: 'Check the Liara login and show which account/team it belongs to. Call this first; if it says not logged in or rejected, call login.',
+    description: 'Check the Liara login, show whether calls go to the personal account or a team, and list the teams this account belongs to. Call this first; if it says not logged in or rejected, call login. If chooseAccount is true, ask the user where to work and call teams {use}.',
     inputSchema: { type: 'object', properties: {} },
-    async handler(_, api) {
+    async handler(_, api, ctx) {
       const me = await api.get('account', '/v1/me');
+      const teams = await listTeams(api).catch(() => []);
+      const workingIn = describeContext(ctx.team, api, teams);
+      if (me.team) workingIn.name = me.team.teamName || workingIn.name;
+      if (me.team) workingIn.role = me.team.teamMemberRole?.name || null;
       return {
         tokenSource: api.auth.source,
-        teamID: api.auth.teamID || null,
         user: { fullname: me.user?.fullname, email: me.user?.email, isVerified: me.user?.isVerified },
-        team: me.team ? { name: me.team.fullname, role: me.team.teamMemberRole?.name } : null,
-        privateNetworkFeature: me.user?.privateNetworkFeature,
+        workingIn,
+        teams,
+        chooseAccount: teams.length > 0 && workingIn.source === 'default',
+        privateNetworkFeature: (me.team || me.user)?.privateNetworkFeature,
+      };
+    },
+  },
+  {
+    name: 'teams',
+    description: 'List the Liara teams this account belongs to (role, and whether it may create and deploy apps there) and choose where to work: a team or the personal account. The choice applies to every later call in this session (apps, databases, buckets, DNS, mail, AI, env vars, deploys) and is saved to the project\'s liara.json as "team-id" (same as the Liara CLI) on the next deploy.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        use: str('Team ID or name to work in from now on, or "personal" for the personal account.'),
+        path: PATH,
+      },
+    },
+    async handler(args, api, ctx) {
+      const teams = await listTeams(api);
+      if (args.use !== undefined) {
+        const t = await resolveTeam(api, args.use);
+        const full = teams.find((x) => x.id === t.id);
+        if (full && full.canDeploy === false) {
+          throw new Error(`Your role in "${full.name}" (${full.role || 'unknown'}) can't deploy apps there. Pick another team or "personal".`);
+        }
+        setChosenTeam(t.id ? { id: t.id, name: full?.name || t.name } : null);
+      }
+      const now = await teamContext(api, args, ctx.cwd);
+      const working = describeContext(now, api.withTeam(now.teamID), teams);
+      return {
+        workingIn: working,
+        teams,
+        savedInLiaraJson: liaraJsonTeam(path.resolve(ctx.cwd, args.path || '.')),
+        note: 'Team resources are billed to the team balance. Use "personal" to switch back.',
       };
     },
   },
@@ -143,11 +179,14 @@ export const TOOLS = [
         saveLiaraJson: bool('Write app/platform/port to liara.json after a successful deploy (default true).'),
       },
     },
-    async handler(args, api) {
+    async handler(args, api, ctx) {
       const res = await deploy(api, args);
+      res.account = describeContext(ctx.team, api);
       if (res.success && args.saveLiaraJson !== false) {
-        writeLiaraJson(path.resolve(args.path || '.'), { app: res.app, platform: res.platform, port: res.port });
-        res.steps.push('saved liara.json');
+        // Remember the team like `liara init` does, so the next deploy (plugin or CLI) goes to the same place.
+        const teamID = api.auth.teamID || null;
+        writeLiaraJson(path.resolve(args.path || '.'), { app: res.app, platform: res.platform, port: res.port, extra: { 'team-id': teamID || undefined } });
+        res.steps.push(teamID ? `saved liara.json (team-id ${teamID})` : 'saved liara.json');
       }
       return res;
     },
@@ -166,11 +205,12 @@ export const TOOLS = [
         network: str('Private network ID (optional).'),
       },
     },
-    async handler(args, api) {
+    async handler(args, api, ctx) {
+      const account = describeContext(ctx.team, api);
       const existing = await getApp(api, args.app);
-      if (existing) return { created: false, app: args.app, platform: existing.type, plan: existing.planID, status: existing.status };
+      if (existing) return { created: false, app: args.app, account, platform: existing.type, plan: existing.planID, status: existing.status };
       const p = await createApp(api, args);
-      return { created: true, app: args.app, platform: p?.type || args.platform, plan: p?.planID || args.planID, url: `https://${args.app}.liara.run` };
+      return { created: true, app: args.app, account, platform: p?.type || args.platform, plan: p?.planID || args.planID, url: `https://${args.app}.liara.run` };
     },
   },
   {
@@ -371,10 +411,31 @@ export const TOOLS = [
   },
 ];
 
+// Tools that act on the login itself, not on an account's resources.
+const ACCOUNT_LEVEL = new Set(['login', 'accounts', 'logout']);
+const TEAM = str('Liara team to act in for this call: team ID or name (see the teams tool), or "personal". Default: the team chosen with the teams tool, else "team-id" in the project\'s liara.json, else LIARA_TEAM_ID, else the personal account.');
+for (const t of TOOLS) {
+  if (!ACCOUNT_LEVEL.has(t.name) && t.name !== 'teams') t.inputSchema.properties.team = TEAM;
+}
+
 export async function callTool(name, args = {}, { cwd = process.cwd() } = {}) {
   const tool = TOOLS.find((t) => t.name === name);
   if (!tool) throw new Error(`Unknown tool: ${name}`);
-  const api = createClient({ cwd });
-  return tool.handler(args || {}, api);
+  args = args || {};
+  if (ACCOUNT_LEVEL.has(name)) return tool.handler(args, createClient({ cwd }), { cwd });
+  const team = await teamContext(createClient({ cwd, teamID: null }), args, cwd);
+  const api = createClient({ cwd, teamID: team.teamID });
+  try {
+    return await tool.handler(args, api, { cwd, team });
+  } catch (err) {
+    // A resource "not found" is often just in another account: say where we looked.
+    if (err.status === 404) {
+      const where = describeContext(team, api);
+      err.message += where.type === 'team'
+        ? ` (looked in team ${where.name ? `"${where.name}" ` : ''}${where.id}). If it belongs to another team or the personal account, pass team or switch with the teams tool.`
+        : ' (looked in the personal account). If it belongs to a team, pass team or switch with the teams tool.';
+    }
+    throw err;
+  }
 }
 
