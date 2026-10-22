@@ -47,7 +47,7 @@ export function startMock() {
       if (teamID && !t) return send(403, { message: 'not a member of this team' });
       return send(200, {
         ...(t ? { team: { _id: t._id, isTeam: true, teamName: t.name, teamMemberRole: t.role, balance: state.teamBalance, minCreditAmount: 10000 } } : {}),
-        user: { fullname: 'Test User', email: 't@example.com', isVerified: true, storage: { secretKey: 'should-not-leak' } },
+        user: { fullname: 'Test User', email: 't@example.com', isVerified: true, storage: { secretKey: 'should-not-leak' }, privateNetworkFeature: Boolean(state.privateNetworkFeature), legacyNetworkFeature: false },
         plans: {
           projects: { 'small-g2': { available: true, CPU: { amount: 0.5 }, RAM: { amount: 0.5 }, volume: 5, displayPrice: 475000 }, 'medium-g2': { available: true, CPU: { amount: 1 }, RAM: { amount: 1 }, volume: 10, price: 1000 }, old: { available: false } },
           projectBundlePlans: { 'medium-g2': { free: { available: false, displayPrice: 0 }, basic: { available: true, displayPrice: 275000 }, pro: { available: true, displayPrice: 825000 } } },
@@ -89,6 +89,7 @@ export function startMock() {
         if ((teamID ? state.teamBalance : state.balance) <= 0) return send(402, { message: 'Not enough balance.' });
         if (state.projects[body.name]) return send(409, { message: 'exists' });
         if (/g2$/.test(body.planID) && !body.network) return send(400, { message: 'g2_plan_unavailable' });
+        if (state.privateNetworkFeature && !body.network) return send(400, { message: 'network_is_required' });
         state.createdProjects.push(body);
         state.projects[body.name] = { _id: id('p'), project_id: body.name, type: body.platform, planID: body.planID, status: 'ACTIVE', envs: [], scale: 1, team: teamID };
         return send(200, {});

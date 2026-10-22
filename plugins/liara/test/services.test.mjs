@@ -109,3 +109,16 @@ test('g2 plans reuse the only network, create one on request, or ask which', asy
     mock.state.networks = saved;
   }
 });
+
+test('accounts on private networking put every new app in the network, not only g2', async () => {
+  mock.state.privateNetworkFeature = true;
+  mock.state.projects['plain-plan'] = undefined;
+  try {
+    const r = await callTool('create_app', { app: 'plain-plan', platform: 'node', planID: 'db-small' });
+    assert.equal(r.created, true);
+    assert.equal(mock.state.createdProjects.at(-1).network, 'net1');
+    assert.match(r.steps.join(), /using private network test-net \(this account uses private networks for all new resources\)/);
+  } finally {
+    mock.state.privateNetworkFeature = false;
+  }
+});

@@ -85,10 +85,22 @@ export async function getPlans(api) {
   };
 }
 
-// Picks the private network for a g2 plan (or when one is asked for). Reuses the only
-// network, creates one when createNetwork names it, and otherwise says what to pass.
+// Accounts on Liara's private networking (privateNetworkFeature, no legacy networking) must
+// put EVERY new app and database in a private network (Liara answers 400 network_is_required),
+// not only g2 plans. Seen live on 2026-10-22.
+export async function networkRequired(api, planID) {
+  if (needsNetwork(planID)) return { required: true, why: `plan ${planID}` };
+  const me = await api.get('account', '/v1/me').catch(() => null);
+  const src = api.auth.teamID ? me?.team : me?.user;
+  if (src?.privateNetworkFeature && !src?.legacyNetworkFeature) return { required: true, why: 'this account uses private networks for all new resources' };
+  return { required: false };
+}
+
+// Picks the private network when one is required (or asked for). Reuses the only network,
+// creates one when createNetwork names it, and otherwise says what to pass.
 export async function resolveNetwork(api, { planID, network, createNetwork }, steps = []) {
-  if (!network && !createNetwork && !needsNetwork(planID)) return null;
+  const need = network || createNetwork ? { required: true, why: 'requested' } : await networkRequired(api, planID);
+  if (!need.required) return null;
   const list = async () => (await api.get('paas', '/v1/networks').catch(() => null))?.networks || [];
   const networks = await list();
   if (network) {
@@ -107,13 +119,13 @@ export async function resolveNetwork(api, { planID, network, createNetwork }, st
     return made._id;
   }
   if (networks.length === 1) {
-    steps.push(`using private network ${networks[0].name} (required by plan ${planID})`);
+    steps.push(`using private network ${networks[0].name} (${need.why})`);
     return networks[0]._id;
   }
   if (!networks.length) {
-    throw new LiaraError(`Plan "${planID}" runs in a private network and this account has none. Ask the user, then pass createNetwork: "<name>" (e.g. "<app>-net"); the app and its databases will share it.`, { status: 400 });
+    throw new LiaraError(`A private network is required (${need.why}) and this account has none. Ask the user, then pass createNetwork: "<name>" (e.g. "<app>-net"); the app and its databases will share it.`, { status: 400 });
   }
-  throw new LiaraError(`Plan "${planID}" needs a private network. Pass network: ${networks.map((n) => `"${n.name}"`).join(' or ')} (the one its databases use).`, { status: 400 });
+  throw new LiaraError(`A private network is required (${need.why}). Pass network: ${networks.map((n) => `"${n.name}"`).join(' or ')} (the one its databases use).`, { status: 400 });
 }
 
 // Checks the bundle before Liara does, so the error lists the choices and prices.
