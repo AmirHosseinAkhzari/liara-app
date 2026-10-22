@@ -45,7 +45,7 @@ test('scan finds every service and never returns secret values', async () => {
   const kinds = r.services.map((s) => s.id).sort();
   assert.deepEqual(kinds, ['ai', 'database:postgres', 'dns', 'email', 'storage']);
   for (const s of r.services) assert.equal(s.recommendation, 'ask-to-migrate', s.id);
-  assert.equal(r.platform, 'nextjs');
+  assert.equal(r.platform, 'next');
   const text = JSON.stringify(r);
   for (const secret of ['secretpw', 'sk-proj-realkeyvalue123', 'supersecret', 'sk_live_abc', 're_123456']) assert.ok(!text.includes(secret), secret);
   assert.ok(r.otherApis.some((o) => o.name === 'Stripe'));
@@ -53,13 +53,13 @@ test('scan finds every service and never returns secret values', async () => {
 
 test('create app, connect services, copy secrets, deploy', async () => {
   const app = 'shop-web';
-  const created = await callTool('create_app', { app, platform: 'nextjs', planID: 'small-g2' });
+  const created = await callTool('create_app', { app, platform: 'next', planID: 'small-g2' });
   assert.equal(created.created, true);
 
   const scan = await callTool('scan_project', { path: workdir, checkDns: false });
   const keysOf = (id) => scan.services.find((s) => s.id === id).envKeys;
 
-  const db = await callTool('connect_database', { app, platform: 'nextjs', create: { type: 'postgres', hostname: 'shop-db', planID: 'db-small', version: '17' }, envKeys: keysOf('database:postgres') });
+  const db = await callTool('connect_database', { app, platform: 'next', create: { type: 'postgres', hostname: 'shop-db', planID: 'db-small', version: '17' }, envKeys: keysOf('database:postgres') });
   assert.deepEqual(Object.keys(db.envVars).sort(), ['DATABASE_URL', 'DIRECT_URL']);
   assert.ok(!JSON.stringify(db).includes('p@ss/word'), 'db password masked');
 
@@ -99,12 +99,14 @@ test('create app, connect services, copy secrets, deploy', async () => {
   assert.equal(dep.state, 'READY');
   assert.equal(dep.success, true);
   assert.equal(dep.port, 3000);
+  assert.equal(mock.state.releases[app][0].body.type, 'next', 'Liara platform ID, not "nextjs"');
+  assert.match(dep.steps.join('|'), /runtime: node/);
   const upload = mock.state.uploads.at(-1).names;
   assert.ok(upload.includes('package.json'));
   assert.ok(upload.includes('.env.example'), 'example env kept');
   assert.ok(!upload.some((n) => n.endsWith('.env.production')), 'real env file not uploaded');
   const saved = JSON.parse(fs.readFileSync(path.join(workdir, 'liara.json'), 'utf8'));
-  assert.deepEqual(saved, { app, platform: 'nextjs', port: 3000 });
+  assert.deepEqual(saved, { app, platform: 'next', port: 3000 });
 
   const logs = await callTool('app_logs', { app });
   assert.match(logs, /listening on 3000/);

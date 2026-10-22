@@ -12,7 +12,8 @@ const svc = (r, id) => r.services.find((s) => s.id === id);
 test('FastAPI + Atlas + local redis + AI proxy', async () => {
   const r = await scan('fastapi-atlas');
   assert.equal(r.platform, 'python');
-  assert.equal(r.port, 8000);
+  assert.equal(r.port, 80, 'Liara python platform');
+  assert.ok(r.warnings.some((w) => /listens on port 8000 \(main\.py\), but Liara's python platform needs port 80/.test(w)), r.warnings.join(' | '));
   assert.equal(svc(r, 'database:mongodb').recommendation, 'ask-to-migrate');
   assert.match(svc(r, 'database:mongodb').providers[0], /MongoDB Atlas/);
   assert.equal(svc(r, 'database:redis').recommendation, 'auto-connect');
@@ -43,7 +44,7 @@ test('Laravel local services are auto-connect, storage via flysystem', async () 
 });
 
 test('archive skips real env files but keeps examples', () => {
-  const { files } = listSourceFiles(fx('next-supabase'), { platform: 'nextjs' });
+  const { files } = listSourceFiles(fx('next-supabase'), { platform: 'next' });
   assert.ok(files.includes('.env.example'));
   assert.ok(files.includes('package.json'));
   assert.ok(!files.some((f) => /\.env\.production$/.test(f)));
@@ -95,4 +96,32 @@ test('multer writing to disk is still flagged', async () => {
   fs.writeFileSync(path.join(dir, 'index.js'), "const multer = require('multer');\nconst upload = multer({ dest: 'uploads/' });\nrequire('express')().listen(3000);\n");
   const r = await detectProject(dir, { checkDns: false });
   assert.ok(r.warnings.some((w) => /writes uploaded files to local disk \(index\.js\)/.test(w)), r.warnings.join(' | '));
+});
+
+test('deep analysis: runtime, package manager, commands, background work, health, tests, binding', async () => {
+  const r = await scan('node-full');
+  assert.equal(r.platform, 'node');
+  assert.deepEqual([r.runtime.runtime, r.runtime.version, r.runtime.source, r.runtime.status], ['node', '20', 'package.json engines.node', 'supported']);
+  assert.deepEqual(r.packageManager, { name: 'pnpm', lockfile: 'pnpm-lock.yaml' });
+  assert.equal(r.commands.start, 'pnpm start');
+  assert.equal(r.commands.build, 'pnpm run build');
+  assert.equal(r.entryPoint, 'src/server.js');
+  assert.deepEqual(r.healthEndpoints.map((h) => h.path), ['/healthz']);
+  assert.deepEqual(r.tests, [{ command: 'pnpm test', framework: 'jest' }]);
+  assert.deepEqual(r.background.queues, ['bullmq']);
+  assert.deepEqual(r.background.cron, ['node-cron']);
+  assert.deepEqual(r.background.realtime, ['socket.io']);
+  assert.deepEqual(r.background.workers, ['Procfile worker: node src/worker.js']);
+  assert.deepEqual(r.localOnlyBinding, ['src/server.js']);
+  assert.ok(r.warnings.some((w) => /only listens on localhost in src\/server\.js/.test(w)));
+  assert.ok(r.warnings.some((w) => /one process per app/.test(w)));
+});
+
+test('Next.js uses Liara\'s "next" platform and flags an unsupported Node version', async () => {
+  const r = await scan('next-health');
+  assert.equal(r.platform, 'next');
+  assert.equal(r.port, 3000);
+  assert.deepEqual(r.healthEndpoints.map((h) => h.path), ['/api/health']);
+  assert.equal(r.runtime.status, 'NOT supported by Liara');
+  assert.ok(r.warnings.some((w) => /node 12 \(package\.json engines\.node\) is not a version Liara supports \(20, 22, 24\)/.test(w)), r.warnings.join(' | '));
 });

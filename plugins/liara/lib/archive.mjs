@@ -12,7 +12,7 @@ const ALWAYS_EXCLUDE = [
   /^\.idea(\/|$)/, /^\.vscode(\/|$)/, /(^|\/)\.terraform(\/|$)/,
 ];
 // Built on Liara, so not uploaded (unless the platform is static/docker).
-const BUILD_DIRS = { laravel: [/^vendor(\/|$)/], php: [/^vendor(\/|$)/], netcore: [/(^|\/)(bin|obj)(\/|$)/] };
+const BUILD_DIRS = { laravel: [/^vendor(\/|$)/], php: [/^vendor(\/|$)/], dotnet: [/(^|\/)(bin|obj)(\/|$)/] };
 const ENV_FILE = /(^|\/)\.env(\..+)?$/;
 const ENV_KEEP = /(^|\/)\.env\.(example|sample|template|dist)$/;
 

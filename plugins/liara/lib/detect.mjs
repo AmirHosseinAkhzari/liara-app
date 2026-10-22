@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import dns from 'node:dns/promises';
+import { analyzeExtras } from './analyze.mjs';
 import {
   PACKAGE_RULES, OTHER_API_PACKAGES, ENV_KEY_RULES, DOMAIN_KEY_RE, KEY_PROVIDERS, LIARA_EQUIVALENT,
   LIARA_DB_TYPES, providerFromHost, engineFromUrl, engineFromKey, engineFromName,
@@ -27,11 +28,16 @@ const MAX_FILES = 4000;
 const MAX_FILE_BYTES = 400_000;
 
 const DEFAULT_PORTS = {
-  node: 3000, nextjs: 3000, python: 8000, go: 8080, docker: 80,
-  react: 80, angular: 80, vue: 80, static: 80, laravel: 80, php: 80, django: 80, flask: 80, netcore: 80,
+  node: 3000, next: 3000, go: 8080, docker: 80, dotnet: 80,
+  react: 80, angular: 80, vue: 80, static: 80, laravel: 80, php: 80, django: 80, flask: 80, python: 80, wordpress: 80,
 };
 // On these platforms Liara runs its own web server, so the port is always 80.
-const FIXED_PORT_PLATFORMS = new Set(['react', 'angular', 'vue', 'static', 'laravel', 'php', 'django', 'flask', 'netcore']);
+// Same as the official Liara CLI (lib/utils/get-port.js) and the docs (FastAPI: --port 80 --platform python).
+const FIXED_PORT_PLATFORMS = new Set(['react', 'angular', 'vue', 'static', 'laravel', 'php', 'django', 'flask', 'python', 'wordpress']);
+// Liara platform IDs (the CLI's AVAILABLE_PLATFORMS). Older names written by earlier versions of this plugin map to them.
+export const PLATFORMS = ['node', 'next', 'react', 'vue', 'angular', 'static', 'laravel', 'php', 'wordpress', 'django', 'flask', 'python', 'go', 'dotnet', 'docker'];
+const ALIASES = { nextjs: 'next', 'next.js': 'next', netcore: 'dotnet', aspnet: 'dotnet', 'asp.net': 'dotnet', nodejs: 'node' };
+export const normalizePlatform = (p) => (p ? ALIASES[String(p).toLowerCase()] || String(p).toLowerCase() : p);
 
 const read = (file) => {
   try {
@@ -164,7 +170,7 @@ function detectStack(root) {
 
   const s = {
     language: null, framework: null, platform: null, alternatives: [], build: {}, notes: [],
-    hasDockerfile, liaraJson, packageJson: Boolean(pkg),
+    hasDockerfile, liaraJson, packageJson: Boolean(pkg), csproj,
   };
   const js = deps.js;
   const hasPy = pyDeps.size > 0 || exists(root, 'manage.py') || exists(root, 'requirements.txt') || exists(root, 'pyproject.toml');
@@ -185,7 +191,7 @@ function detectStack(root) {
         s.build.outputDir = 'out';
         s.notes.push('next.config has output: "export" → deploy the built `out/` folder as a static site.');
       } else {
-        s.platform = 'nextjs';
+        s.platform = 'next';
       }
     } else if (js.has('nuxt') || js.has('nuxt3')) {
       s.framework = 'Nuxt'; s.platform = 'node';
@@ -247,7 +253,7 @@ function detectStack(root) {
   }
 
   if (!s.platform && csproj.length) {
-    s.language = 'C#'; s.framework = 'ASP.NET Core'; s.platform = 'netcore';
+    s.language = 'C#'; s.framework = 'ASP.NET Core'; s.platform = 'dotnet';
   }
 
   if (!s.platform) {
@@ -267,11 +273,13 @@ function detectStack(root) {
   }
 
   if (hasDockerfile && s.platform && s.platform !== 'docker') s.alternatives.push('docker');
-  if (liaraJson?.platform && liaraJson.platform !== s.platform) {
+  const fromJson = normalizePlatform(liaraJson?.platform);
+  if (fromJson && fromJson !== s.platform) {
     s.notes.push(`liara.json says platform "${liaraJson.platform}" (detected "${s.platform}"). Using liara.json.`);
     if (s.platform) s.alternatives.unshift(s.platform);
-    s.platform = liaraJson.platform;
+    s.platform = fromJson;
   }
+  if (liaraJson?.platform && fromJson !== liaraJson.platform) s.notes.push(`liara.json platform "${liaraJson.platform}" is an old name; Liara calls it "${fromJson}" (fixed on the next deploy).`);
   s.alternatives = [...new Set(s.alternatives)].filter((p) => p !== s.platform);
   return { stack: s, deps };
 }
@@ -279,18 +287,26 @@ function detectStack(root) {
 function detectPort(root, stack, files) {
   if (stack.liaraJson?.port) return { port: Number(stack.liaraJson.port), source: 'liara.json' };
   const p = stack.platform;
-  if (FIXED_PORT_PLATFORMS.has(p)) return { port: 80, source: `Liara ${p} platform always serves on port 80` };
+  if (FIXED_PORT_PLATFORMS.has(p)) {
+    // The plain python platform runs the user's own server command, so its port must be 80 too.
+    const code = p === 'python' ? portFromCode(root, files) : null;
+    return { port: 80, source: `Liara ${p} platform serves on port 80`, codePort: code && code.port !== 80 ? code : null };
+  }
   if (p === 'docker') {
     const m = (read(path.join(root, 'Dockerfile')) || '').match(/^\s*EXPOSE\s+(\d+)/im);
     if (m) return { port: Number(m[1]), source: 'Dockerfile EXPOSE' };
   }
   const scripts = Object.values(stack.build.scripts || {}).join(' ');
   const scriptPort = scripts.match(/(?:--port[ =]|-p\s+|PORT=)(\d{2,5})/);
-  if (scriptPort && p !== 'nextjs') return { port: Number(scriptPort[1]), source: 'package.json scripts' };
-  if (p === 'nextjs') {
+  if (scriptPort && p !== 'next') return { port: Number(scriptPort[1]), source: 'package.json scripts' };
+  if (p === 'next') {
     const m = (stack.build.scripts?.start || '').match(/-p\s+(\d+)|--port[ =](\d+)/);
     return { port: m ? Number(m[1] || m[2]) : 3000, source: m ? 'next start script' : 'Next.js default' };
   }
+  return portFromCode(root, files) || { port: DEFAULT_PORTS[p] ?? 3000, source: 'platform default (please confirm)' };
+}
+
+function portFromCode(root, files) {
   const extra = ['Procfile', 'Dockerfile', 'start.sh', 'main.py', 'app.py', 'run.py', 'main.go', 'server.js', 'index.js', 'app.js', 'src/index.ts', 'src/main.ts', 'src/server.ts', 'src/index.js', 'src/app.ts', 'src/server.js'];
   const candidates = [...new Set([...extra, ...files.filter((f) => /\.(m?[jt]s|py|go)$/.test(f))])].slice(0, 400);
   const patterns = [
@@ -312,7 +328,7 @@ function detectPort(root, stack, files) {
       if (m && Number(m[1]) > 0 && Number(m[1]) < 65536) return { port: Number(m[1]), source: `${f}` };
     }
   }
-  return { port: DEFAULT_PORTS[p] ?? 3000, source: 'platform default (please confirm)' };
+  return null;
 }
 
 // ---------- code scan: env vars the code reads + hints ----------
@@ -485,13 +501,16 @@ export async function detectProject(root, { liaraEnvs = null, checkDns = true } 
   if (!fs.existsSync(root)) throw new Error(`Path not found: ${root}`);
   const files = walk(root);
   const { stack, deps } = detectStack(root);
-  const { port, source: portSource } = detectPort(root, stack, files);
+  const { port, source: portSource, codePort } = detectPort(root, stack, files);
   const { envRefs, hints } = scanCode(root, files);
   const envFiles = findEnvFiles(root);
   if (liaraEnvs) envFiles.push({ file: '(Liara app env vars)', kind: 'liara', vars: liaraEnvs });
   const compose = composeServices(root);
   const hosting = currentHosting(root);
   const warnings = [...stack.notes];
+  const { extras, warnings: extraWarnings } = analyzeExtras(root, { stack, deps, files, port, platform: stack.platform });
+  warnings.push(...extraWarnings);
+  if (codePort) warnings.push(`The code listens on port ${codePort.port} (${codePort.source}), but Liara's ${stack.platform} platform needs port 80. Change it to 80 (or read PORT with a default of 80) and listen on 0.0.0.0.`);
 
   // 1) Evidence from packages
   const evidence = []; // {kind, engine?, provider?, sdk?, source, needsCodeChange?, note?, maybe?}
@@ -794,6 +813,7 @@ export async function detectProject(root, { liaraEnvs = null, checkDns = true } 
     build: stack.build,
     hasDockerfile: stack.hasDockerfile,
     liaraJson: stack.liaraJson || null,
+    ...extras,
     rootIsProject,
     subprojects,
     currentHosting: hosting,
@@ -811,6 +831,15 @@ export function summarize(report) {
   const lines = [];
   lines.push(`Project: ${report.framework || 'unknown'} (${report.language || '?'}) → Liara platform "${report.platform || '?'}", port ${report.port} (${report.portSource})`);
   if (report.currentHosting.length) lines.push(`Currently set up for: ${report.currentHosting.join(', ')}`);
+  if (report.runtime) lines.push(`Runtime: ${report.runtime.runtime} ${report.runtime.version || '(not pinned)'}${report.runtime.source ? ` from ${report.runtime.source}` : ''} → ${report.runtime.status}`);
+  if (report.packageManager) lines.push(`Package manager: ${report.packageManager.name}${report.packageManager.lockfile ? ` (${report.packageManager.lockfile})` : ' (no lockfile)'}`);
+  if (report.commands?.build || report.commands?.start) lines.push(`Build: ${report.commands.build || '—'} | Start: ${report.commands.start || '—'}${report.entryPoint ? ` | Entry: ${report.entryPoint}` : ''}`);
+  if (report.healthEndpoints?.length) lines.push(`Health endpoints: ${report.healthEndpoints.map((h) => h.path).join(', ')}`);
+  if (report.tests?.length) lines.push(`Tests: ${report.tests.map((t) => t.command).join(', ')}`);
+  const bg = report.background || {};
+  const bgLine = [bg.realtime?.length && `WebSockets (${bg.realtime.join(', ')})`, bg.queues?.length && `queues (${bg.queues.join(', ')})`, bg.cron?.length && `cron (${bg.cron.join(', ')})`, bg.workers?.length && 'extra processes'].filter(Boolean);
+  if (bgLine.length) lines.push(`Also uses: ${bgLine.join(', ')}`);
+  if (report.git?.github) lines.push(`GitHub: ${report.git.github.owner}/${report.git.github.repo} (branch ${report.git.branch}${report.git.liaraWorkflows.length ? `, Liara workflow: ${report.git.liaraWorkflows.join(', ')}` : ''})`);
   for (const s of report.services) {
     const label = s.kind === 'database' ? `database (${s.engine})` : s.kind;
     lines.push(`- ${label}: ${s.status} → ${s.recommendation}${s.providers.length ? ` | ${s.providers.join('; ')}` : ''}`);

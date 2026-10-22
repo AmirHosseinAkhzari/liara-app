@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createArchive } from './archive.mjs';
-import { detectProject } from './detect.mjs';
+import { detectProject, normalizePlatform } from './detect.mjs';
+import { detectRuntime, VERSION_KEY } from './analyze.mjs';
 import { LiaraError } from './api.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -140,7 +141,7 @@ export async function createApp(api, { app, platform, planID, bundlePlanID, netw
   }
   const bundle = await checkBundle(api, { planID, bundlePlanID, group: 'projectBundlePlans' });
   const networkID = await resolveNetwork(api, { planID, network, createNetwork }, steps);
-  const body = { name: app, platform, planID, readOnlyRootFilesystem };
+  const body = { name: app, platform: normalizePlatform(platform), planID, readOnlyRootFilesystem };
   if (bundle) body.bundlePlanID = bundle;
   if (networkID) body.network = networkID;
   await api.post('paas', '/v1/projects', body);
@@ -191,15 +192,16 @@ export async function releaseStatus(api, { app, releaseID, wait = 0 }) {
 
 export async function deploy(api, args) {
   const root = path.resolve(args.path || process.cwd());
-  let { app, platform, port } = args;
+  let { app, port } = args;
+  let platform = normalizePlatform(args.platform);
   let report = null;
   if (!platform || !port || !app) {
     report = await detectProject(root, { checkDns: false });
-    platform ||= report.platform;
+    platform ||= normalizePlatform(report.platform);
     port ||= report.port;
     app ||= report.suggestedAppName;
   }
-  if (!platform) throw new Error('Could not detect the platform. Pass platform (e.g. node, nextjs, laravel, django, flask, python, go, netcore, react, vue, angular, static, docker).');
+  if (!platform) throw new Error('Could not detect the platform. Pass platform (e.g. node, next, laravel, django, flask, python, go, dotnet, react, vue, angular, static, docker).');
 
   const steps = [];
   let project = await getApp(api, app);
@@ -242,14 +244,27 @@ export async function deploy(api, args) {
   const gi = gitInfo(root);
   if (gi) body.gitInfo = gi;
   for (const k of ['build', 'cron', 'args', 'disks', 'healthCheck']) if (liaraJson[k] !== undefined) body[k] = liaraJson[k];
-  if (liaraJson[platform] && typeof liaraJson[platform] === 'object') body.platformConfig = liaraJson[platform];
+  // Runtime version: liara.json wins; otherwise the version the project pins, if Liara supports it (like `liara deploy`).
+  const platformConfig = liaraJson[platform] && typeof liaraJson[platform] === 'object' ? { ...liaraJson[platform] } : {};
+  const runtime = detectRuntime(root, platform);
+  if (runtime) {
+    const key = VERSION_KEY[platform];
+    if (platformConfig[key]) steps.push(`runtime: ${runtime.runtime} ${platformConfig[key]} (liara.json)`);
+    else if (runtime.version && runtime.status === 'supported') {
+      platformConfig[key] = runtime.version;
+      steps.push(`runtime: ${runtime.runtime} ${runtime.version} (from ${runtime.source})`);
+    } else if (runtime.version) {
+      steps.push(`warning: ${runtime.runtime} ${runtime.version} (${runtime.source}) is not supported by Liara; using Liara's default ${runtime.liaraDefault}`);
+    } else steps.push(`runtime: ${runtime.runtime} not pinned, Liara uses its default ${runtime.liaraDefault}`);
+  }
+  if (Object.keys(platformConfig).length) body.platformConfig = platformConfig;
 
   const rel = await api.post('paas', `/v2/projects/${encodeURIComponent(app)}/releases`, body);
   const releaseID = rel?.releaseID;
   steps.push(`release ${releaseID} started (type ${platform}, port ${port})`);
 
   const status = await releaseStatus(api, { app, releaseID, wait: args.wait ?? 240 });
-  return { app, platform, port: Number(port), steps, ...status };
+  return { app, platform, port: Number(port), runtime: runtime ? { runtime: runtime.runtime, version: platformConfig[VERSION_KEY[platform]] || runtime.liaraDefault } : undefined, steps, ...status };
 }
 
 export async function appLogs(api, { app, since, lines = 100 }) {

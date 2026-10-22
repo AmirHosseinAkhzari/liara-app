@@ -20,7 +20,7 @@ const bool = (description) => ({ type: 'boolean', description });
 const strArr = (description) => ({ type: 'array', items: { type: 'string' }, description });
 const PATH = str('Project folder (absolute or relative to the current directory). Default: current directory.');
 const APP = str('Liara app name (lowercase letters, digits, hyphens).');
-const PLATFORM = str('Liara platform of the app, used to pick env var names (laravel, django, nextjs, node, ...).');
+const PLATFORM = str('Liara platform of the app, used to pick env var names (laravel, django, next, node, ...).');
 const ENV_KEYS = strArr('Env var names the app reads for this service (from scan_project). Leave empty to use common defaults for the platform.');
 
 export const TOOLS = [
@@ -173,7 +173,7 @@ export const TOOLS = [
       properties: {
         path: PATH,
         app: APP,
-        platform: str('Liara platform: node, nextjs, react, vue, angular, static, laravel, php, django, flask, python, go, netcore, docker. Default: detected.'),
+        platform: str('Liara platform: node, next, react, vue, angular, static, laravel, php, wordpress, django, flask, python, go, dotnet, docker. Default: detected.'),
         port: num('Port the app listens on. Default: detected.'),
         planID: str('Plan for a NEW app (see plans tool).'),
         bundlePlanID: str('Feature bundle for a NEW app, required when the plan lists bundles (see plans: bundles with prices).'),
