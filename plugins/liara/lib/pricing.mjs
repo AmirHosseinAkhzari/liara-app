@@ -52,9 +52,13 @@ export function vpsCatalog(api) {
 
 export function aiCatalog(api) {
   return cached('ai', async () => {
-    const data = await api.get('ai', '/v2/models', { query: { limit: 200 } });
-    const list = Array.isArray(data) ? data : data?.models || data?.data || [];
-    return { fetchedAt: now(), source: SOURCES.ai, models: list };
+    // 20 models per page; only "page" is accepted (no limit/perPage).
+    const first = await api.get('ai', '/v2/models');
+    const list = [...(first?.models || [])];
+    const pages = Math.min(Math.ceil((first?.total || list.length) / (first?.limit || 20)), 30);
+    const rest = await Promise.all(Array.from({ length: Math.max(0, pages - 1) }, (_, i) => api.get('ai', '/v2/models', { query: { page: i + 2 } }).catch(() => null)));
+    for (const r of rest) list.push(...(r?.models || []));
+    return { fetchedAt: now(), source: SOURCES.ai, models: list, total: first?.total ?? list.length };
   });
 }
 
@@ -74,7 +78,7 @@ export async function productPlans(api, product) {
   if (product === 'ai') {
     const c = await aiCatalog(api);
     const models = c.models.map((m) => ({ id: m.id, name: m.name, modality: m.architecture?.modality, contextLength: m.context_length, pricePerToken: m.pricing || null }));
-    return { product, fetchedAt: c.fetchedAt, source: c.source, models, unit: 'Prices per token, exactly as the API lists them (the API does not state the currency). Usage-based: you pay for what you use.', docs: DOCS.ai };
+    return { product, fetchedAt: c.fetchedAt, source: c.source, total: c.total ?? models.length, models, unit: 'Prices per token, exactly as the API lists them (the API does not state the currency). Usage-based: you pay for what you use.', docs: DOCS.ai };
   }
   const c = await meCatalog(api);
   const group = { apps: 'projects', databases: 'databases', storage: 'objectStorage', mail: 'mail' }[product];

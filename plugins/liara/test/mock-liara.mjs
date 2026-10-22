@@ -6,7 +6,7 @@ export function startMock() {
   const state = {
     projects: {}, databases: {}, buckets: {}, keys: [], zones: {}, records: {}, mails: [], workspaces: [], aiKeys: [], domains: [],
     uploads: [], releases: {}, requests: [], calls: [],
-    networks: [{ _id: 'net1', name: 'test-net' }], createdProjects: [], logs: {}, buildLogs: {},
+    networks: [{ _id: 'net1', name: 'test-net' }], createdProjects: [], logs: {}, buildLogs: {}, vms: [],
     // Teams the test user belongs to: owner of one, view-only in the other.
     teams: [
       { _id: 'aaaaaaaaaaaaaaaaaaaaaaa2', name: 'تیم ۲', role: { name: 'مالک', permissions: [{ name: 'manage', type: 'project' }, { name: 'create', type: 'project' }, { name: 'create', type: 'database' }] } },
@@ -46,7 +46,7 @@ export function startMock() {
       const t = state.teams.find((x) => x._id === teamID);
       if (teamID && !t) return send(403, { message: 'not a member of this team' });
       return send(200, {
-        ...(t ? { team: { _id: t._id, isTeam: true, teamName: t.name, teamMemberRole: t.role } } : {}),
+        ...(t ? { team: { _id: t._id, isTeam: true, teamName: t.name, teamMemberRole: t.role, balance: 50000, minCreditAmount: 10000 } } : {}),
         user: { fullname: 'Test User', email: 't@example.com', isVerified: true, storage: { secretKey: 'should-not-leak' } },
         plans: {
           projects: { 'small-g2': { available: true, CPU: { amount: 0.5 }, RAM: { amount: 0.5 }, volume: 5, displayPrice: 475000 }, 'medium-g2': { available: true, CPU: { amount: 1 }, RAM: { amount: 1 }, volume: 10, price: 1000 }, old: { available: false } },
@@ -56,8 +56,27 @@ export function startMock() {
         databaseVersions: { postgres: ['16', '17'] }, defaultDatabaseVersions: { postgres: '17' },
       });
     }
+    if (service === 'account' && p === '/v1/me/free-credit') return send(200, { remainingFreeCredit: 0 });
+    // ---- billing: like the live API, it ignores teamID and answers for the user
+    if (service === 'billing' && p === '/v1/billing') return send(200, { user: { balance: 1_000_000, accountType: 'personal', contactInfo: { phone: 'SHOULD-NOT-LEAK' }, minCreditAmount: 50000, isManualMinCredit: false } });
+    // ---- iaas
+    if (service === 'iaas') {
+      if (m === 'GET' && p === '/plans') return send(200, { plans: { 'standard-base-g2': { available: true, monthlyPrice: 900000, hourlyPrice: 1250, volume: 30, RAM: { amount: 2 }, CPU: { amount: 1 }, IPv4MonthlyPrice: [100000] }, old: { available: false, monthlyPrice: 1 } } });
+      if (m === 'GET' && p === '/oss') return send(200, { ubuntu: ['24.04', '22.04'], debian: ['12.9'], 'one-click-apps': { docker: ['29.1.2'] } });
+      if (m === 'GET' && p === '/vm') return send(200, { vms: state.vms.map(({ config, IPs, ...v }) => v) });
+      if (m === 'POST' && p === '/vm') {
+        const v = { _id: id('vm'), name: body.name, plan: body.plan, OS: body.OS, state: 'CREATED', power: 'POWERED_ON', createdAt: 'now', config: { ...body.config, rootPassword: 'ROOT-PW-NEVER-SHOW', hostname: body.name }, IPs: [{ address: '185.1.2.3', version: '4' }] };
+        state.vms.push(v);
+        return send(200, { taskID: id('task') });
+      }
+      if ((mm = p.match(/^\/vm\/([^/]+)$/)) && m === 'GET') { const v = state.vms.find((x) => x._id === mm[1]); return v ? send(200, v) : send(404, {}); }
+      if ((mm = p.match(/^\/vm\/([^/]+)$/)) && m === 'DELETE') { state.vms = state.vms.filter((x) => x._id !== mm[1]); return send(200, {}); }
+      if ((mm = p.match(/^\/vm\/power\/([^/]+)$/)) && m === 'PATCH') { const v = state.vms.find((x) => x._id === mm[1]); v.power = body.action === 'start' ? 'POWERED_ON' : 'POWERED_OFF'; v.lastAction = body.action; return send(200, {}); }
+      if ((mm = p.match(/^\/vm\/resize\/([^/]+)$/)) && m === 'PATCH') { state.vms.find((x) => x._id === mm[1]).plan = body.plan; return send(200, {}); }
+    }
     // ---- paas
     if (service === 'paas') {
+      if ((mm = p.match(/^\/v1\/projects\/([^/]+)$/)) && m === 'DELETE') { if (!mine(state.projects[mm[1]])) return send(404, {}); delete state.projects[mm[1]]; return send(200, {}); }
       if (m === 'GET' && p === '/v2/teams') return send(200, { totalTeams: state.teams.length, teams: state.teams.map((t) => ({ _id: t._id, name: t.name, color: 'blue' })) });
       if (m === 'GET' && p === '/v1/projects') return send(200, { projects: Object.values(state.projects).filter(mine) });
       if (m === 'GET' && p === '/v1/networks') return send(200, { networks: state.networks });
@@ -173,6 +192,14 @@ export function startMock() {
     // ---- ai
     if (service === 'ai') {
       if (m === 'GET' && p === '/v1/workspaces') return send(200, { workspaces: state.workspaces });
+      if (m === 'GET' && p === '/v2/models') {
+        // Like the live API: 20 per page, only "page" allowed.
+        const extra = [...url.searchParams.keys()].filter((k) => k !== 'page' && k !== 'teamID');
+        if (extra.length) return send(400, { message: `"${extra[0]}" is not allowed` });
+        const all = Array.from({ length: 23 }, (_, i) => ({ id: i ? `vendor/model-${i}` : 'openai/gpt-x', name: `M${i}`, architecture: { modality: 'text->text' }, context_length: 128000, pricing: { prompt: '0.000002', completion: '0.00001' } }));
+        const page = Number(url.searchParams.get('page') || 1);
+        return send(200, { models: all.slice((page - 1) * 20, page * 20), page, limit: 20, total: all.length });
+      }
       if (m === 'POST' && p === '/v1/workspaces') { const w = { _id: id('ws'), name: body.name, plan: body.plan, state: 'ACTIVE' }; state.workspaces.push(w); return send(200, { workspace: w }); }
       if (m === 'POST' && p === '/v1/keys') { state.aiKeys.push(body); return send(201, { name: body.name, key: 'liara-ai-key-abcdef', _id: id('k') }); }
     }

@@ -6,7 +6,9 @@ import { getEnvs, setEnvs, connectDatabase, connectStorage, connectMail, connect
 import { migrateDatabase, migrateStorage } from './migrate.mjs';
 import { browserLogin, logout, useAccount, readAuthFile, AUTH_FILE } from './login.mjs';
 import { listTeams, resolveTeam, setChosenTeam, teamContext, describeContext, liaraJsonTeam } from './teams.mjs';
-import { priceOf, formatToman } from './pricing.mjs';
+import { priceOf, formatToman, productPlans, estimate } from './pricing.mjs';
+import { billingOverview } from './billing.mjs';
+import { listVms, vmDetails, createVm, vmPower, vmResize, vmDelete } from './vps.mjs';
 import { requireConsent, approvePlan, RISK_LABEL } from './consent.mjs';
 import { record } from './audit.mjs';
 import { verifyApp, diagnose } from './verify.mjs';
@@ -163,9 +165,45 @@ export const TOOLS = [
   },
   {
     name: 'plans',
-    description: 'Available Liara plans with RAM/CPU/disk and monthly price in Toman, the feature bundles each plan needs (with prices), which plans need a private network, and database versions. Use the IDs for planID / bundlePlanID / version, and show the total monthly cost to the user before creating anything.',
+    description: 'Liara products, plans and live prices (Toman) from the official API, with when they were fetched. Without product: app, database, object storage and mail plans with bundles, network needs and database versions (for picking planID / bundlePlanID / version). With product: one product\'s plans sorted by price — apps, databases, storage, mail, vps (with operating systems) or ai (per-token prices). compare limits the list to some plan IDs. Show the user the cost before creating anything.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        product: str('apps | databases | storage | mail | vps | ai', { enum: ['apps', 'databases', 'storage', 'mail', 'vps', 'ai'] }),
+        compare: strArr('Only these plan IDs (or AI model IDs), side by side.'),
+      },
+    },
+    async handler(args, api) {
+      if (!args.product) return getPlans(api);
+      const r = await productPlans(api, args.product);
+      if (args.compare?.length) {
+        const keep = new Set(args.compare);
+        if (r.plans) r.plans = r.plans.filter((p) => keep.has(p.id));
+        if (r.models) r.models = r.models.filter((m) => keep.has(m.id));
+      }
+      return r;
+    },
+  },
+  {
+    name: 'estimate_cost',
+    description: 'Estimate the monthly cost of a set of resources from live Liara prices: each line, the total, when prices were fetched, and what the estimate leaves out (taxes, AI usage, traffic). Read-only. kind: app | database | bucket | mail | vps.',
+    inputSchema: {
+      type: 'object',
+      required: ['items'],
+      properties: {
+        items: {
+          type: 'array',
+          items: { type: 'object', required: ['kind', 'plan'], properties: { kind: str('app | database | bucket | mail | vps'), plan: str('Plan ID.'), bundle: str('Feature bundle ID (apps, databases).'), count: num('How many (default 1).'), name: str('Label.'), ipv4: bool('VPS: add an IPv4 address.') } },
+        },
+      },
+    },
+    handler: (args, api) => estimate(api, args.items || []),
+  },
+  {
+    name: 'billing',
+    description: 'Billing of the current account (personal or the chosen team): balance in Toman, low-credit alert settings, free credit, every running app/database/bucket/VPS with its plan price, an estimated monthly total and how long the balance lasts at that rate, and resources worth checking (stopped, never deployed). Read-only: never pays or changes anything. Invoices and actual charges are only in the Liara console (no API).',
     inputSchema: { type: 'object', properties: {} },
-    handler: (_, api) => getPlans(api),
+    handler: (_, api) => billingOverview(api),
   },
   {
     name: 'deploy',
@@ -435,6 +473,58 @@ export const TOOLS = [
     handler: (args, api) => migrateStorage(api, args),
   },
   {
+    name: 'vps_list',
+    description: 'Cloud VPSes on the account (name, plan, OS, state, power, IPs, SSH port). With vm: one VPS in detail. Root passwords are never returned.',
+    inputSchema: { type: 'object', properties: { vm: str('VPS name or ID for details.') } },
+    handler: (args, api) => (args.vm ? vmDetails(api, args.vm) : listVms(api)),
+  },
+  {
+    name: 'create_vm',
+    description: 'Create a Liara cloud VPS. Plan and OS are checked against the live lists first (plans {product: "vps"}); the user confirms the monthly cost. Waits for the real state and returns the IP and SSH details (never the root password). Prefer sshKeys (public keys).',
+    inputSchema: {
+      type: 'object',
+      required: ['name', 'os', 'plan'],
+      properties: {
+        name: str('VPS name (lowercase letters, digits, hyphens).'),
+        os: str('Operating system as "<name>-<version>", e.g. ubuntu-24.04 (see plans {product: "vps"} → operatingSystems).'),
+        plan: str('VPS plan ID (see plans {product: "vps"}).'),
+        sshKeys: strArr('Public SSH keys to install (e.g. the contents of ~/.ssh/id_ed25519.pub). Never a private key.'),
+        sshPort: num('SSH port (default 22).'),
+        wait: num('Seconds to wait for the VPS to be ready (default 180).'),
+      },
+    },
+    handler: (args, api) => createVm(api, args),
+  },
+  {
+    name: 'vm_action',
+    description: 'Change a VPS: start, shutdown (graceful), stop (forced power off), reboot, resize (to another plan; changes the monthly cost) or delete (permanent; the user must type the name). Always asks first.',
+    inputSchema: {
+      type: 'object',
+      required: ['vm', 'action'],
+      properties: {
+        vm: str('VPS name or ID.'),
+        action: str('start | shutdown | stop | reboot | resize | delete', { enum: ['start', 'shutdown', 'stop', 'reboot', 'resize', 'delete'] }),
+        plan: str('New plan for resize.'),
+      },
+    },
+    async handler(args, api) {
+      if (args.action === 'resize') return vmResize(api, args);
+      if (args.action === 'delete') return vmDelete(api, args);
+      return vmPower(api, args);
+    },
+  },
+  {
+    name: 'delete_app',
+    description: 'Permanently delete a Liara app (its releases, settings, env vars and disks). The user must type the app name to confirm; it can never be pre-approved. Databases and buckets it used are not deleted.',
+    inputSchema: { type: 'object', required: ['app'], properties: { app: APP } },
+    async handler({ app }, api) {
+      if (!(await getApp(api, app))) throw Object.assign(new Error(`App "${app}" not found`), { status: 404 });
+      await api.del('paas', `/v1/projects/${encodeURIComponent(app)}`);
+      const gone = !(await getApp(api, app));
+      return { app, deleted: gone, note: gone ? 'The app no longer exists on Liara.' : 'Deletion requested; Liara still lists the app, check again in a minute.' };
+    },
+  },
+  {
     name: 'approve_plan',
     description: 'Ask the user ONCE to approve a whole set of operations (for a deploy: create app, databases, bucket, env vars, deploy). Shows one confirmation listing every step with its monthly cost, priced live by the plugin. After approval those exact operations run without asking again for 2 hours; anything not listed, or with a different plan/bundle, still asks. Deletes are never covered. For billable steps pass kind + plan (+ bundle) exactly as the later call will.',
     inputSchema: {
@@ -657,6 +747,29 @@ const CONSENTS = {
   },
   async migrate_storage(args) {
     return { risk: 'change', title: `Copy all files into the Liara bucket of «${args.app}»`, target: args.app, resource: `bucket ${args.targetBucket || '(from the app env)'}`, effect: 'Copies every object from the current bucket; files with the same name are overwritten. The source is only read.', data: 'Files pass through this computer (rclone).', cost: 'No new resource; storage use grows.' };
+  },
+  async create_vm(args, api) {
+    return {
+      risk: 'billable', title: `Create VPS «${args.name}»`, target: args.name, plan: args.plan,
+      resource: `VPS ${args.name}: plan ${args.plan}, ${args.os}${args.sshKeys?.length ? `, ${args.sshKeys.length} SSH key(s)` : ', no SSH key (password from the console)'}`,
+      effect: 'Creates a cloud server that runs (and is billed) until you delete it.',
+      cost: await costLine(api, { kind: 'vps', plan: args.plan }),
+      after: 'You get its IP and SSH details once Liara reports it ready.',
+    };
+  },
+  async vm_action(args, api) {
+    const v = args.vm;
+    if (args.action === 'delete') {
+      return { risk: 'destructive', title: `Delete VPS «${v}»`, target: v, resource: `VPS ${v}`, effect: 'Deletes the server and its disk. All data on it is lost for good.', cost: 'Billing for it stops.', typedConfirm: v };
+    }
+    if (args.action === 'resize') {
+      return { risk: 'billable', title: `Resize VPS «${v}» to ${args.plan}`, target: v, plan: args.plan, resource: `VPS ${v}`, effect: 'Changes the server size; it may restart.', cost: await costLine(api, { kind: 'vps', plan: args.plan }) };
+    }
+    const effect = { start: 'Powers the server on.', shutdown: 'Shuts the server down gracefully; it is unreachable until started.', stop: 'Forces the power off (like pulling the plug); unsaved data can be lost.', reboot: 'Restarts the server; it is unreachable for a moment.' }[args.action];
+    return { risk: 'change', title: `${args.action} VPS «${v}»`, target: v, plan: args.action, resource: `VPS ${v}`, effect, cost: 'No change to the plan.' };
+  },
+  async delete_app(args) {
+    return { risk: 'destructive', title: `Delete app «${args.app}»`, target: args.app, resource: `app ${args.app}`, effect: 'Deletes the app with its releases, settings, env vars and disks. This cannot be undone. Databases and buckets are kept.', cost: 'Billing for the app stops.', typedConfirm: args.app };
   },
   async api(args) {
     const method = String(args.method || 'GET').toUpperCase();
