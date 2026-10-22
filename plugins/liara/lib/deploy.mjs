@@ -295,11 +295,36 @@ export async function deploy(api, args) {
   return { app, platform, port: Number(port), runtime: runtime ? { runtime: runtime.runtime, version: platformConfig[VERSION_KEY[platform]] || runtime.liaraDefault } : undefined, steps, ...status };
 }
 
+// Runtime logs as [{time, type, message}]. Uses /v2/projects/{app}/logs like the current Liara CLI
+// (the old /v1 endpoint now answers "Please upgrade your client"); falls back to v1.
+export async function fetchLogs(api, app, sinceSeconds) {
+  const v2 = await api.get('paas', `/v2/projects/${encodeURIComponent(app)}/logs`, { query: { start: sinceSeconds, direction: 'forward', last_lines: false }, timeoutMs: 20_000 }).catch(() => null);
+  if (v2 && Array.isArray(v2.data)) {
+    const out = [];
+    for (const group of v2.data) {
+      for (const [ts, raw] of group.values || []) {
+        let type = null; let message = raw;
+        try {
+          const j = JSON.parse(raw);
+          if (j && typeof j === 'object') { type = j.type || null; message = j._entry ?? j.message ?? raw; }
+        } catch {
+          // plain text line
+        }
+        const ms = Number(BigInt(ts) / 1_000_000n);
+        out.push({ time: new Date(ms).toISOString(), type, message: String(message), release: group.metaData?.releaseId });
+      }
+    }
+    return out.sort((a, b) => (a.time < b.time ? -1 : 1));
+  }
+  const v1 = await api.get('paas', `/v1/projects/${encodeURIComponent(app)}/logs`, { query: { since: sinceSeconds } });
+  const list = Array.isArray(v1) ? v1 : v1?.logs || [];
+  return list.map((l) => ({ time: l.datetime || null, type: l.type || null, message: String(l.message ?? '') }));
+}
+
 export async function appLogs(api, { app, since, lines = 100 }) {
   const ts = since ?? Math.floor(Date.now() / 1000) - 3600;
-  const data = await api.get('paas', `/v1/projects/${encodeURIComponent(app)}/logs`, { query: { since: ts } });
-  const list = Array.isArray(data) ? data : data?.logs || [];
-  return list.slice(-lines).map((l) => `${l.datetime || ''} ${l.type ? `[${l.type}] ` : ''}${l.message ?? ''}`.trim()).join('\n') || '(no logs in this period)';
+  const list = (await fetchLogs(api, app, ts)).filter((l) => l.message !== '');
+  return list.slice(-lines).map((l) => `${l.time || ''} ${l.type ? `[${l.type}] ` : ''}${l.message}`.trim()).join('\n') || '(no logs in this period)';
 }
 
 // Writes/updates liara.json so `liara deploy` and this plugin redeploy the same way.

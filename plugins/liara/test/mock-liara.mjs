@@ -134,7 +134,12 @@ export function startMock() {
         const list = state.releases[mm[1]] || [];
         return send(200, { total: list.length, currentRelease: list[0]?._id, releases: list });
       }
-      if ((mm = p.match(/^\/v1\/projects\/([^/]+)\/logs$/))) return send(200, (state.logs?.[mm[1]] || ['listening on 3000']).map((message) => ({ type: 'stdout', datetime: '2026-10-21T10:00:00Z', message })));
+      // Like the live API: v1 logs only tell old clients to upgrade; v2 has the lines.
+      if ((mm = p.match(/^\/v1\/projects\/([^/]+)\/logs$/))) return send(200, [{ type: 'stdout', datetime: '2026-10-21T10:00:00Z', message: 'Please upgrade your client using: `npm install -g @liara/cli`' }]);
+      if ((mm = p.match(/^\/v2\/projects\/([^/]+)\/logs$/))) {
+        const lines = state.logs?.[mm[1]] || ['listening on 3000'];
+        return send(200, { data: [{ metaData: { releaseId: 'rel' }, values: lines.map((line, i) => [String(BigInt(Date.now() - 60_000 + i) * 1_000_000n), JSON.stringify({ type: 'stdout', _entry: line })]) }] });
+      }
       if ((mm = p.match(/^\/v2\/releases\/([^/]+)\/build-logs$/))) return state.buildLogs?.[mm[1]] ? send(200, state.buildLogs[mm[1]].map((line) => ({ line: `${line}\n` }))) : send(404, {});
       if (m === 'POST' && p === '/v1/domains') {
         const d = { _id: id('d'), name: body.name, project: { project_id: body.project }, CNameRecord: `${body.project}.liara.run` };

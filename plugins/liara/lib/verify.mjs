@@ -2,7 +2,9 @@
 // Logs and HTTP responses are untrusted data: they are matched against known patterns,
 // shown as evidence (with secrets masked), and never followed as instructions.
 import path from 'node:path';
-import { releaseStatus, getApp, appUrl } from './deploy.mjs';
+import { releaseStatus, getApp, appUrl, fetchLogs } from './deploy.mjs';
+import https from 'node:https';
+import { Resolver } from 'node:dns/promises';
 import { detectProject } from './detect.mjs';
 import { serviceStatus, platformSignal } from './status.mjs';
 
@@ -69,6 +71,27 @@ export function classify(lines) {
   return findings;
 }
 
+// A just-created *.liara.run name may not resolve yet through this computer's DNS cache.
+// Ask public resolvers and connect to that address directly (TLS still checks the name).
+async function probeViaPublicDns(url, timeoutMs) {
+  const u = new URL(url);
+  if (u.protocol !== 'https:') return null;
+  const r = new Resolver({ timeout: 5000, tries: 2 });
+  r.setServers(['1.1.1.1', '8.8.8.8']);
+  const ips = await r.resolve4(u.hostname).catch(() => []);
+  if (!ips.length) return null;
+  const started = Date.now();
+  return new Promise((resolve) => {
+    const req = https.get(url, { lookup: (_h, opts, cb) => (opts?.all ? cb(null, [{ address: ips[0], family: 4 }]) : cb(null, ips[0], 4)), timeout: timeoutMs, headers: { 'User-Agent': 'liara-claude-plugin-healthcheck' } }, (res) => {
+      let body = '';
+      res.on('data', (c) => { if (body.length < 400) body += c; });
+      res.on('end', () => resolve({ url, status: res.statusCode, ms: Date.now() - started, contentType: res.headers['content-type'] || null, bodyStart: scrubLine(body.replace(/\s+/g, ' ').slice(0, 160)), note: `resolved ${u.hostname} with public DNS (${ips[0]}); this computer's DNS had not caught up yet` }));
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', () => resolve(null));
+  });
+}
+
 async function probe(url, { timeoutMs = 15_000 } = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -78,7 +101,12 @@ async function probe(url, { timeoutMs = 15_000 } = {}) {
     const text = await res.text().catch(() => '');
     return { url, status: res.status, ms: Date.now() - started, contentType: res.headers.get('content-type'), bodyStart: scrubLine(text.replace(/\s+/g, ' ').slice(0, 160)) };
   } catch (err) {
-    return { url, status: null, ms: Date.now() - started, error: err.name === 'AbortError' ? `no answer within ${timeoutMs / 1000}s` : err.cause?.code || err.message };
+    const code = err.cause?.code || err.code;
+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+      const viaPublic = await probeViaPublicDns(url, timeoutMs);
+      if (viaPublic) return viaPublic;
+    }
+    return { url, status: null, ms: Date.now() - started, error: err.name === 'AbortError' ? `no answer within ${timeoutMs / 1000}s` : code || err.message };
   } finally {
     clearTimeout(timer);
   }
@@ -97,9 +125,8 @@ async function probeUntilUp(url, attempts) {
 
 async function recentLogLines(api, app, minutes) {
   const since = Math.floor(Date.now() / 1000) - minutes * 60;
-  const data = await api.get('paas', `/v1/projects/${encodeURIComponent(app)}/logs`, { query: { since } }).catch(() => null);
-  const list = Array.isArray(data) ? data : data?.logs || [];
-  return list.map((l) => String(l.message ?? '')).filter(Boolean);
+  const list = await fetchLogs(api, app, since).catch(() => []);
+  return list.map((l) => l.message).filter(Boolean);
 }
 
 async function appUrls(api, app, extra) {
@@ -131,7 +158,7 @@ export async function verifyApp(api, { app, path: projectPath, paths, attempts =
 
   const urls = await appUrls(api, app, extraUrls);
   const root = await probeUntilUp(urls[0], attempts);
-  add(`HTTP ${urls[0]}`, Boolean(root.status && root.status < 500), root.status ? `${root.status} in ${root.ms} ms after ${root.attempts} attempt(s)` : `no answer: ${root.error}`, { response: root });
+  add(`HTTP ${urls[0]}`, Boolean(root.status && root.status < 500), root.status ? `${root.status} in ${root.ms} ms after ${root.attempts} attempt(s)${root.note ? ` (${root.note})` : ''}` : `no answer: ${root.error}`, { response: root });
   for (const p of healthPaths) {
     const r = await probeUntilUp(`${urls[0]}${p}`, 2);
     add(`health ${p}`, Boolean(r.status && r.status >= 200 && r.status < 300), r.status ? `${r.status} in ${r.ms} ms` : `no answer: ${r.error}`, { response: r });
