@@ -166,6 +166,9 @@ section.card h2::before{content:"";width:10px;height:10px;border-radius:3px;back
 p{margin:.4em 0}
 .lead{font-size:1.05rem}
 .note{color:var(--muted);font-size:.9rem}
+.facts{font-weight:700;padding:8px 12px;border-radius:8px;margin:0 0 10px}
+.facts-ok{background:var(--ok-bg);color:var(--ok)}.facts-fail{background:var(--fail-bg);color:var(--fail)}.facts-muted{background:var(--muted-bg);color:var(--muted)}
+td bdi{overflow-wrap:break-word}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr));gap:12px}
 .kv{border:1px solid var(--line);border-radius:10px;padding:10px 12px}
 .kv .k{color:var(--muted);font-size:.85rem;display:block}
@@ -237,8 +240,15 @@ export async function buildReport({ lang = 'en', operation = 'deployment', reque
   const appName = f.deploy?.result?.app || f.infra.find((i) => i.kind === 'app')?.name || project?.suggestedAppName || '';
   const parts = [];
 
-  // Summary (Claude's narrative, labeled)
-  parts.push(section(t.summary, `${request ? `<p><strong>${esc(t.request)}:</strong> ${escLong(request)}</p>` : ''}${summary ? `<p class="lead"><strong>${esc(t.done)}:</strong> ${escLong(summary)}</p>` : ''}<p class="note">${esc(t.narrative)}</p>`));
+  // Summary: a facts line computed from the recorded actions, then Claude's narrative (labeled).
+  const failedCount = f.actions.filter((e) => ['failed', 'error'].includes(e.outcome)).length;
+  const deployOk = f.deploy?.result?.success === true;
+  const healthy = f.verify?.result?.healthy;
+  const factsText = lang === 'fa'
+    ? `طبق کارهای ثبت‌شده: ${f.deploy ? (deployOk ? 'استقرار موفق بود' : 'استقرار ناموفق بود') : 'استقرار موفقی ثبت نشده است'}${healthy === true ? '، همه‌ی بررسی‌های سلامت موفق بود' : healthy === false ? '، بعضی از بررسی‌های سلامت ناموفق بود' : '، بررسی سلامت انجام نشده است'}${failedCount ? `، ${faDigits(failedCount)} کار با خطا تمام شد` : ''}.`
+    : `Recorded facts: ${f.deploy ? (deployOk ? 'the deployment succeeded' : 'the deployment failed') : 'no successful deployment is recorded'}${healthy === true ? ', every health check passed' : healthy === false ? ', some health checks failed' : ', no health check was run'}${failedCount ? `, ${failedCount} action${failedCount === 1 ? '' : 's'} ended with an error` : ''}.`;
+  const factsKind = deployOk && healthy === true && !failedCount ? 'ok' : failedCount || f.deploy || healthy === false ? 'fail' : 'muted';
+  parts.push(section(t.summary, `<p class="facts facts-${factsKind}">${esc(factsText)}</p>${request ? `<p><strong>${esc(t.request)}:</strong> ${escLong(request)}</p>` : ''}${summary ? `<p class="lead"><strong>${esc(t.done)}:</strong> ${escLong(summary)}</p>` : ''}<p class="note">${esc(t.narrative)}</p>`));
 
   // Project
   if (project) {
@@ -254,7 +264,7 @@ export async function buildReport({ lang = 'en', operation = 'deployment', reque
     { html: v(fmtTime(e.time, lang)), num: true },
     { html: esc(names[e.tool] || e.tool) },
     { html: e.target ? v(e.target) : '—' },
-    { html: pill(statusKind(e.outcome), t.status[e.outcome] || e.outcome) + (e.error ? `<br><span class="note">${esc(e.error)}</span>` : '') },
+    { html: pill(statusKind(e.outcome), t.status[e.outcome] || e.outcome) + (e.error ? `<br><span class="note"><bdi>${esc(e.error)}</bdi></span>` : '') },
     { html: e.consent ? `<span class="note">${lang === 'fa' ? consentFa(e.consent) : esc(e.consent)}</span>` : '—' },
   ]);
   parts.push(section(t.actions, actionRows.length ? table([t.time, t.action, t.target, t.result, t.approval], actionRows) : `<p class="note">${esc(t.none)}</p>`));

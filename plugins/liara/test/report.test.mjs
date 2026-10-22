@@ -48,6 +48,7 @@ test('Persian report: RTL, facts from the session, live prices, Persian digits',
     docs: [{ title: 'استقرار برنامه‌های NodeJS', url: 'https://docs.liara.ir/paas/nodejs/getting-started/' }, { title: 'bad', url: 'javascript:alert(1)' }],
   });
   assert.equal(r.written, true);
+  assert.match(fs.readFileSync(r.file, 'utf8'), /<p class="facts facts-ok">طبق کارهای ثبت‌شده: استقرار موفق بود، همه‌ی بررسی‌های سلامت موفق بود\.<\/p>/);
   assert.match(r.file, /liara-reports\/liara-deployment-report-cafe-api-\d{8}-\d{6}-fa\.html$/);
   assert.deepEqual(r.checks.problems, []);
   const html = fs.readFileSync(r.file, 'utf8');
@@ -83,6 +84,14 @@ test('English report: smaller (no embedded font), escaped narrative, secrets mas
   assert.ok(html.includes('Missing start script'));
   assert.match(html, /<h2>Health checks<\/h2>/);
   assert.match(html, /HTTP http:\/\/127\.0\.0\.1:\d+/);
+});
+
+test('the facts line cannot be hidden by an optimistic narrative', async () => {
+  const { buildReport } = await import('../lib/report.mjs');
+  const journal = [{ time: new Date().toISOString(), tool: 'create_app', risk: 'billable', outcome: 'error', target: 'x', error: 'POST /v1/projects → 402: Not enough balance.', result: {} }];
+  const { html } = await buildReport({ lang: 'en', summary: 'Everything was deployed perfectly.', journal });
+  assert.match(html, /<p class="facts facts-fail">Recorded facts: no successful deployment is recorded, no health check was run, 1 action ended with an error\.<\/p>/);
+  assert.match(html, /<bdi>POST \/v1\/projects → 402: Not enough balance\.<\/bdi>/);
 });
 
 test('two reports never overwrite each other', async () => {
