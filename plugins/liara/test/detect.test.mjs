@@ -48,3 +48,22 @@ test('archive skips real env files but keeps examples', () => {
   assert.ok(files.includes('package.json'));
   assert.ok(!files.some((f) => /\.env\.production$/.test(f)));
 });
+
+test('ClickHouse Cloud and CloudAMQP in production are asked about, not switched', async () => {
+  const r = await scan('node-clickhouse');
+  assert.equal(r.port, 3000);
+  const ch = svc(r, 'database:clickhouse');
+  assert.equal(ch.recommendation, 'ask-to-migrate');
+  assert.match(ch.providers[0], /ClickHouse Cloud/);
+  assert.match(ch.liaraEquivalent, /clickhouse/);
+  assert.match(svc(r, 'database:rabbitmq').providers[0], /CloudAMQP/);
+});
+
+test('Python ClickHouse, Elasticsearch and RabbitMQ clients are found', async () => {
+  const r = await scan('py-analytics');
+  for (const id of ['database:clickhouse', 'database:elasticsearch', 'database:rabbitmq']) {
+    assert.ok(svc(r, id), `${id} missing; found ${r.services.map((s) => s.id).join(', ')}`);
+    assert.equal(svc(r, id).recommendation, 'auto-connect', id);
+  }
+  assert.ok(svc(r, 'database:clickhouse').envKeys.includes('CLICKHOUSE_PORT'));
+});

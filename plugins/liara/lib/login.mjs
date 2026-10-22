@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 
 export const AUTH_FILE = process.env.LIARA_AUTH_FILE || path.join(os.homedir(), '.liara-auth.json');
@@ -28,7 +29,17 @@ export function readAuthFile() {
 }
 
 function writeAuthFile(conf) {
+  // Tests must never touch the real login (an early test run once saved fake accounts there).
+  if (process.env.NODE_TEST_CONTEXT && AUTH_FILE === path.join(os.homedir(), '.liara-auth.json')) {
+    throw new Error('Refusing to write ~/.liara-auth.json from a test run. Set LIARA_AUTH_FILE.');
+  }
   fs.writeFileSync(AUTH_FILE, JSON.stringify(conf), { mode: 0o600 });
+  // `mode` only applies when the file is new; the Liara CLI creates it world-readable.
+  try {
+    fs.chmodSync(AUTH_FILE, 0o600);
+  } catch {
+    // not fatal (e.g. Windows)
+  }
 }
 
 export function saveAccounts(list) {
@@ -81,17 +92,59 @@ function openBrowser(url) {
   });
 }
 
-function listen(server, port) {
+function listen(server, port, host) {
   return new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => resolve(port));
+    const onError = (err) => reject(err);
+    server.once('error', onError);
+    server.listen({ port, host, exclusive: true }, () => {
+      server.off('error', onError);
+      resolve(port);
+    });
   });
+}
+
+// True if something already answers on this port. The browser calls back to
+// "localhost", which may resolve to ::1 or 127.0.0.1, so both must be free —
+// otherwise the tokens would be posted to whatever else runs there (a dev server).
+function portTaken(port, host) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ port, host });
+    const done = (taken) => { sock.destroy(); resolve(taken); };
+    sock.setTimeout(300, () => done(false));
+    sock.once('connect', () => done(true));
+    sock.once('error', () => done(false));
+  });
+}
+
+// Listens on 127.0.0.1 and ::1 (when IPv6 exists) on the first port free on both.
+async function listenOnFreePort(handler, from = 3001, to = 3100) {
+  for (let port = from; port <= to; port++) {
+    if ((await portTaken(port, '127.0.0.1')) || (await portTaken(port, '::1'))) continue;
+    const servers = [];
+    try {
+      const v4 = http.createServer(handler);
+      await listen(v4, port, '127.0.0.1');
+      servers.push(v4);
+      const v6 = http.createServer(handler);
+      try {
+        await listen(v6, port, '::1');
+        servers.push(v6);
+      } catch (err) {
+        if (err.code === 'EADDRINUSE') throw err;
+        // no IPv6 loopback on this machine: IPv4 alone is fine
+      }
+      return { port, servers };
+    } catch {
+      for (const s of servers) s.close();
+    }
+  }
+  throw new Error(`No free local port between ${from} and ${to} for the login callback.`);
 }
 
 async function startLogin({ timeoutSeconds, openBrowserFn = openBrowser }) {
   let resolveData; let rejectData;
   const result = new Promise((res, rej) => { resolveData = res; rejectData = rej; });
-  const server = http.createServer(async (req, res) => {
+  const handler = async (req, res) => {
     if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
     if (req.url !== '/callback' || req.method !== 'POST') { res.writeHead(404, CORS); res.end(); return; }
     // Only the Liara console may hand us tokens.
@@ -107,27 +160,22 @@ async function startLogin({ timeoutSeconds, openBrowserFn = openBrowser }) {
     res.writeHead(Array.isArray(data) ? 200 : 400, CORS);
     res.end();
     if (Array.isArray(data) && data.some((a) => a?.token)) resolveData(data);
-  });
+  };
 
-  let port = null;
-  for (let p = 3001; p <= 3100 && !port; p++) {
-    try {
-      port = await listen(server, p);
-    } catch {
-      // port busy, try next
-    }
-  }
-  if (!port) throw new Error('No free local port between 3001 and 3100 for the login callback.');
+  const { port, servers } = await listenOnFreePort(handler);
 
   const query = `cli=v1&callbackURL=localhost:${port}/callback&client=cli`;
   const url = `${CONSOLE}/login?${Buffer.from(query).toString('base64')}`;
   const timer = setTimeout(() => rejectData(new Error('Login timed out. Run login again.')), timeoutSeconds * 1000);
   // Don't keep the process alive just for a login nobody finished.
   timer.unref();
-  server.unref();
+  for (const s of servers) s.unref();
   const done = result
     .then((data) => saveAccounts(data))
-    .finally(() => { clearTimeout(timer); server.close(); server.closeAllConnections?.(); });
+    .finally(() => {
+      clearTimeout(timer);
+      for (const s of servers) { s.close(); s.closeAllConnections?.(); }
+    });
   const state = { url, port, done, finished: false, error: null, value: null };
   done.then((v) => { state.finished = true; state.value = v; }, (e) => { state.finished = true; state.error = e; });
   state.browserOpened = await openBrowserFn(url);

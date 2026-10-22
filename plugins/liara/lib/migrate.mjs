@@ -1,11 +1,13 @@
 // Copies data from the current provider into Liara.
 // Runs dump/restore tools locally (or in Docker when they are not installed).
 // Credentials are passed to child processes as env vars and never returned.
+import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 import { parseEnvFile } from './envfiles.mjs';
 import { credsFromEnv } from './envmap.mjs';
-import { engineFromUrl, providerFromHost } from './providers.mjs';
+import { engineFromUrl, engineFromKey, providerFromHost } from './providers.mjs';
 import { dbCreds, waitForDatabase, getEnvs } from './services.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -36,24 +38,99 @@ function run(script, env, { timeoutMs = 60 * 60_000 } = {}) {
   });
 }
 
-function sourceUrl({ root, sourceEnvFile, sourceKey }) {
+const HTTP_ENGINES = ['clickhouse', 'elasticsearch'];
+
+// ClickHouse and Elasticsearch are often configured as a host plus separate user/password
+// keys. Builds one http(s)://user:pass@host:port/db URL from them.
+export function httpSourceUrl(vars, engine) {
+  const pick = (...ks) => ks.map((k) => vars[k]).find(Boolean);
+  const ch = engine === 'clickhouse';
+  let base = ch
+    ? pick('CLICKHOUSE_URL', 'CLICKHOUSE_HOST', 'CLICKHOUSE_SERVER')
+    : pick('ELASTICSEARCH_URL', 'ELASTICSEARCH_NODE', 'ELASTIC_URL', 'ELASTICSEARCH_HOST', 'ELASTICSEARCH_HOSTS', 'ELASTIC_HOST');
+  if (!base) return null;
+  const user = ch ? pick('CLICKHOUSE_USER', 'CLICKHOUSE_USERNAME') : pick('ELASTICSEARCH_USERNAME', 'ELASTICSEARCH_USER', 'ELASTIC_USERNAME', 'ELASTIC_USER');
+  const pass = ch ? pick('CLICKHOUSE_PASSWORD') : pick('ELASTICSEARCH_PASSWORD', 'ELASTIC_PASSWORD');
+  const port = ch ? pick('CLICKHOUSE_PORT') || '8123' : '9200';
+  // ELASTICSEARCH_HOSTS may be a list: take the first one.
+  base = String(base).split(',')[0].trim().replace(/^\[?["']?|["']?\]?$/g, '');
+  if (!/^[a-z]+:\/\//i.test(base)) base = `http://${base}${/:\d+$/.test(base) ? '' : `:${port}`}`;
+  const u = new URL(base);
+  if (user && !u.username) u.username = user;
+  if (pass && !u.password) u.password = pass;
+  if (!ch && u.password && !u.username) u.username = 'elastic';
+  const db = ch && pick('CLICKHOUSE_DATABASE', 'CLICKHOUSE_DB');
+  if (db && (!u.pathname || u.pathname === '/')) u.pathname = `/${db}`;
+  return u.toString();
+}
+
+export function sourceInfo({ root, sourceEnvFile, sourceKey, sourceEngine }) {
   const vars = parseEnvFile(path.resolve(root, sourceEnvFile));
   if (sourceKey) {
     if (!vars[sourceKey]) throw new Error(`${sourceKey} is not set in ${sourceEnvFile}`);
-    return vars[sourceKey];
+    const engine = sourceEngine || engineFromUrl(vars[sourceKey]) || engineFromKey(sourceKey);
+    if (HTTP_ENGINES.includes(engine)) {
+      const own = engine === 'clickhouse' ? 'CLICKHOUSE_URL' : 'ELASTICSEARCH_URL';
+      return { url: httpSourceUrl({ ...vars, [own]: vars[sourceKey] }, engine), engine };
+    }
+    return { url: vars[sourceKey], engine };
+  }
+  if (HTTP_ENGINES.includes(sourceEngine)) {
+    const url = httpSourceUrl(vars, sourceEngine);
+    if (url) return { url, engine: sourceEngine };
   }
   // Prefer a direct (non-pooled) URL when one exists, e.g. Supabase/Prisma DIRECT_URL.
   const keys = ['DIRECT_URL', 'DATABASE_URL_UNPOOLED', 'POSTGRES_URL_NON_POOLING', 'DATABASE_URL', 'MONGODB_URI', 'MONGO_URL', 'MONGO_URI', 'MYSQL_URL', 'POSTGRES_URL'];
-  for (const k of keys) if (vars[k] && engineFromUrl(vars[k])) return vars[k];
+  for (const k of keys) if (vars[k] && engineFromUrl(vars[k])) return { url: vars[k], engine: engineFromUrl(vars[k]) };
+  for (const engine of HTTP_ENGINES) {
+    const url = httpSourceUrl(vars, engine);
+    if (url) return { url, engine };
+  }
   const c = credsFromEnv('database', vars);
   if (c.host) {
-    const engine = /pgsql|postgres/i.test(vars.DB_CONNECTION || '') ? 'postgresql' : /mongo/i.test(vars.DB_CONNECTION || '') ? 'mongodb' : 'mysql';
-    return `${engine}://${encodeURIComponent(c.user || '')}:${encodeURIComponent(c.password || '')}@${c.host}:${c.port || (engine === 'postgresql' ? 5432 : 3306)}/${c.name || ''}`;
+    const scheme = /pgsql|postgres/i.test(vars.DB_CONNECTION || '') ? 'postgresql' : /mongo/i.test(vars.DB_CONNECTION || '') ? 'mongodb' : 'mysql';
+    const url = `${scheme}://${encodeURIComponent(c.user || '')}:${encodeURIComponent(c.password || '')}@${c.host}:${c.port || (scheme === 'postgresql' ? 5432 : 3306)}/${c.name || ''}`;
+    return { url, engine: engineFromUrl(url) };
   }
   throw new Error(`No database URL found in ${sourceEnvFile}. Pass sourceKey.`);
 }
 
-function pipeline(engine, { schemas }) {
+// ClickHouse URL → HTTP base, "user:pass" and database. Native ports map to their HTTP ones.
+export function clickhouseHttp(url) {
+  const u = new URL(url);
+  let proto = u.protocol.replace(':', '');
+  let port = u.port;
+  if (!/^https?$/.test(proto)) proto = ['8443', '9440'].includes(port) ? 'https' : 'http';
+  if (port === '9000') port = '8123';
+  if (port === '9440') port = '8443';
+  return {
+    base: `${proto}://${u.hostname}${port ? `:${port}` : ''}`,
+    auth: `${decodeURIComponent(u.username) || 'default'}:${decodeURIComponent(u.password)}`,
+    db: u.pathname.replace(/^\//, '') || 'default',
+  };
+}
+
+// Engines whose data is not copied, and what to tell the user instead.
+const NOT_COPIED = {
+  redis: 'Redis is usually a cache/queue; data is not copied. Ask the user if they really need it (then use redis-cli --rdb / RIOT).',
+  rabbitmq: 'RabbitMQ holds messages in flight, not stored data, so nothing is copied. The app declares its queues again when it starts on Liara; let the old broker drain before switching.',
+  mssql: 'SQL Server data is not copied automatically. Export a .bacpac from the old server with sqlpackage (or SSMS "Export Data-tier Application") and import it into the Liara database.',
+};
+
+const SCRIPTS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'scripts');
+
+export function pipeline(engine, { schemas } = {}) {
+  if (engine === 'clickhouse') {
+    const cmd = fs.readFileSync(path.join(SCRIPTS, 'clickhouse-copy.sh'), 'utf8');
+    const verify = `echo "SELECT count() FROM system.tables WHERE database = '$DST_DB'" | curl -sS -u "$DST_AUTH" --data-binary @- "$DST_HTTP/"`;
+    return { cmd, verify, tools: ['curl', 'sed'], image: 'curlimages/curl:8.10.1' };
+  }
+  if (engine === 'elasticsearch') {
+    // Every non-system index with its mapping, settings, aliases and documents.
+    const types = '--includeType=settings,analyzer,mapping,alias,data';
+    const cmd = `d=$(mktemp -d) && multielasticdump --direction=dump --match="^[^.]" ${types} --input="$SRC_URL" --output="$d" && multielasticdump --direction=load ${types} --input="$d" --output="$DST_URL"; s=$?; rm -rf "$d"; exit $s`;
+    return { cmd, verify: null, tools: ['multielasticdump'], image: 'elasticdump/elasticsearch-dump:latest' };
+  }
   const schemaFlags = (schemas || []).map((s) => `--schema=${s}`).join(' ');
   if (engine === 'postgres') {
     const cmd = `pg_dump "$SRC_URL" --no-owner --no-privileges --quote-all-identifiers ${schemaFlags} | psql "$DST_URL" -v ON_ERROR_STOP=0 -q`;
@@ -79,10 +156,9 @@ function splitUrl(url) {
 
 export async function migrateDatabase(api, args) {
   const root = path.resolve(args.path || process.cwd());
-  const src = sourceUrl({ root, sourceEnvFile: args.sourceEnvFile || '.env.production', sourceKey: args.sourceKey });
-  const engine = engineFromUrl(src);
-  if (!engine) throw new Error('Could not tell the source engine from its URL.');
-  if (engine === 'redis') return { skipped: true, reason: 'Redis is usually a cache/queue; data is not copied. Ask the user if they really need it (then use redis-cli --rdb / RIOT).' };
+  const { url: src, engine } = sourceInfo({ root, sourceEnvFile: args.sourceEnvFile || '.env.production', sourceKey: args.sourceKey, sourceEngine: args.sourceEngine });
+  if (!engine) throw new Error('Could not tell the source engine from its URL. Pass sourceEngine.');
+  if (NOT_COPIED[engine]) return { skipped: true, engine, reason: NOT_COPIED[engine] };
   const srcHost = new URL(src).hostname;
   const isSupabase = /supabase/.test(srcHost);
   const schemas = args.schemas || (isSupabase && engine === 'postgres' ? ['public'] : null);
@@ -118,6 +194,11 @@ export async function migrateDatabase(api, args) {
       SRC_HOST: s.host, SRC_PORT: s.port || '3306', SRC_USER: s.user, SRC_PASS: s.pass, SRC_DB: s.db,
       DST_HOST: dst.host, DST_PORT: String(dst.port), DST_USER: dst.user, DST_PASS: dst.password, DST_DB: dst.name,
     };
+    if (engine === 'clickhouse') {
+      const a = clickhouseHttp(src);
+      const b = clickhouseHttp(dst.url);
+      Object.assign(env, { SRC_HTTP: a.base, SRC_AUTH: a.auth, SRC_DB: a.db, DST_HTTP: b.base, DST_AUTH: b.auth, DST_DB: args.targetDbName || a.db });
+    }
     let script = [p.preDst, p.cmd].filter(Boolean).join(' && ');
     let verify = p.verify;
     let via = 'local tools';
@@ -126,11 +207,19 @@ export async function migrateDatabase(api, args) {
         return {
           steps,
           error: `Needs ${p.tools.join(' + ')} or Docker on this computer.`,
-          install: engine === 'postgres' ? 'brew install libpq && brew link --force libpq' : engine === 'mongodb' ? 'brew install mongodb-database-tools' : 'brew install mysql-client',
+          install: {
+            postgres: 'brew install libpq && brew link --force libpq',
+            mongodb: 'brew install mongodb-database-tools',
+            elasticsearch: 'npm install -g elasticdump',
+            clickhouse: 'brew install curl',
+          }[engine] || 'brew install mysql-client',
         };
       }
       const envFlags = Object.keys(env).map((k) => `-e ${k}`).join(' ');
-      const wrap = (c) => `docker run --rm -i ${envFlags} ${p.image} sh -c ${sq(`set -o pipefail 2>/dev/null; ${c}`)}`;
+      // Override the entrypoint: some images (curl, elasticdump) start their tool, not a shell.
+      // Debian/Ubuntu images use dash, where a bare `set -o pipefail` exits the shell (code 2),
+      // so only turn it on where the shell supports it.
+      const wrap = (c) => `docker run --rm -i ${envFlags} --entrypoint sh ${p.image} -c ${sq(`(set -o pipefail) 2>/dev/null && set -o pipefail; ${c}`)}`;
       script = wrap([p.preDst, p.cmd].filter(Boolean).join(' && '));
       verify = p.verify ? wrap(p.verify) : null;
       via = `Docker (${p.image})`;
@@ -152,6 +241,8 @@ export async function migrateDatabase(api, args) {
       stderrTail: res.stderr,
       notes: [
         isSupabase ? 'Supabase: only the public schema was copied (auth/storage schemas belong to Supabase). Users in auth.users are not moved.' : null,
+        engine === 'clickhouse' ? 'ClickHouse: tables and rows were copied; views, materialized views and dictionaries were not. Recreate them with your migrations.' : null,
+        engine === 'elasticsearch' ? 'Elasticsearch: every index not starting with "." was copied with its settings, mappings, aliases and documents. Index templates and ILM policies were not.' : null,
         'Errors like "role does not exist" or "extension already exists" are usually harmless.',
       ].filter(Boolean),
     };

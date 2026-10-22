@@ -56,6 +56,8 @@ export function defaultKeys(kind, { platform, engine } = {}) {
     if (engine === 'mongodb') return ['MONGODB_URI'];
     if (engine === 'rabbitmq') return ['AMQP_URL'];
     if (engine === 'elasticsearch') return ['ELASTICSEARCH_URL'];
+    // Same names as Liara's ClickHouse docs (CLICKHOUSE_HOST holds http://host:port).
+    if (engine === 'clickhouse') return ['CLICKHOUSE_HOST', 'CLICKHOUSE_USER', 'CLICKHOUSE_PASSWORD'];
     return ['DATABASE_URL'];
   }
   if (kind === 'storage') {
@@ -78,10 +80,14 @@ const LARAVEL_DRIVER = { postgres: 'pgsql', mysql: 'mysql', mariadb: 'mariadb', 
 export function fillKeys(kind, keys, creds, { platform } = {}) {
   const out = {};
   const unmapped = [];
+  // ClickHouse clients over HTTP (@clickhouse/client) take a full URL in *_HOST unless
+  // the app also has a separate port key (clickhouse-connect style).
+  const hostIsUrl = kind === 'database' && creds.engine === 'clickhouse' && !keys.some((k) => roleOf(kind, k) === 'port');
   for (const key of keys) {
     const role = roleOf(kind, key);
     let value;
     switch (role) {
+      case 'host': value = hostIsUrl ? `http://${creds.host}:${creds.port}` : creds.host; break;
       case 'driver': value = platform === 'laravel' || /^DB_CONNECTION$/.test(key) ? LARAVEL_DRIVER[creds.engine] : creds.engine; break;
       case 'disk': value = /DEFAULT_FILE_STORAGE/.test(key) ? 'storages.backends.s3boto3.S3Boto3Storage' : 's3'; break;
       case 'pathStyle': value = 'true'; break;
@@ -109,6 +115,7 @@ export function databaseUrl(engine, { host, port, user, password, name }) {
     case 'redis': return `redis://${auth}${host}:${port}/0`;
     case 'rabbitmq': return `amqp://${auth}${host}:${port}`;
     case 'elasticsearch': return `http://${auth}${host}:${port}`;
+    case 'clickhouse': return `http://${auth}${host}:${port}/${name || 'default'}`;
     case 'mssql': return `sqlserver://${host}:${port};database=${name || 'master'};user=${user};password=${password};encrypt=true;trustServerCertificate=true`;
     default: return null;
   }

@@ -70,8 +70,8 @@ async function findDatabase(api, idOrName) {
   return hit ? (await api.get('dbaas', `/v1/databases/${hit._id || hit.id}`)).database : null;
 }
 
-const DEFAULT_USER = { postgres: 'root', mysql: 'root', mariadb: 'root', mongodb: 'root', redis: 'default', mssql: 'sa', rabbitmq: 'root', elasticsearch: 'elastic' };
-const DEFAULT_DBNAME = { postgres: 'postgres', mongodb: 'admin', redis: '0', mssql: 'master' };
+const DEFAULT_USER = { postgres: 'root', mysql: 'root', mariadb: 'root', mongodb: 'root', redis: 'default', mssql: 'sa', rabbitmq: 'root', elasticsearch: 'elastic', clickhouse: 'root' };
+const DEFAULT_DBNAME = { postgres: 'postgres', mongodb: 'admin', redis: '0', mssql: 'master', clickhouse: 'default' };
 
 export function dbCreds(db, { publicAccess = false, dbName } = {}) {
   const engine = db.type === 'postgresql' ? 'postgres' : db.type;
@@ -137,6 +137,8 @@ export async function connectDatabase(api, args) {
     appEnvUpdate: envResult,
     notes: [
       creds.engine === 'mysql' || creds.engine === 'mariadb' ? `MySQL/MariaDB: make sure database "${creds.name || '(none set)'}" exists (create it once from the Liara console's control panel or with CREATE DATABASE).` : null,
+      creds.engine === 'postgres' ? 'PostGIS and pgvector come with Liara PostgreSQL: enable them with CREATE EXTENSION postgis; / CREATE EXTENSION vector; (or let your migrations do it).' : null,
+      creds.engine === 'clickhouse' ? 'ClickHouse on Liara is reached over HTTP (user root). Create tables with your migrations, or use migrate_database to copy existing data.' : null,
       'Run migrations after the deploy (e.g. prisma migrate deploy / php artisan migrate / manage.py migrate) or use migrate_database to copy existing data.',
     ].filter(Boolean),
   };

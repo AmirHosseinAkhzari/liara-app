@@ -377,6 +377,7 @@ function composeServices(root) {
       [/postgres|postgis/, 'database', 'postgres'], [/mariadb/, 'database', 'mariadb'], [/mysql/, 'database', 'mysql'],
       [/mongo/, 'database', 'mongodb'], [/redis|valkey|keydb/, 'database', 'redis'], [/rabbitmq/, 'database', 'rabbitmq'],
       [/elasticsearch|opensearch/, 'database', 'elasticsearch'], [/mssql|sqlserver/, 'database', 'mssql'],
+      [/clickhouse/, 'database', 'clickhouse'],
       [/minio/, 'storage', null], [/mailhog|mailpit|maildev/, 'email', null], [/ollama/, 'ai', null],
     ].find(([re]) => re.test(img));
     if (map) found.push({ image: img, kind: map[1], engine: map[2] });

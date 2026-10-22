@@ -231,7 +231,7 @@ export const TOOLS = [
           type: 'object',
           description: 'Create a new database.',
           properties: {
-            type: str('postgres | mysql | mariadb | mongodb | redis | mssql | elasticsearch | rabbitmq'),
+            type: str('postgres | mysql | mariadb | mongodb | redis | mssql | elasticsearch | rabbitmq | clickhouse'),
             hostname: str('Unique database name, e.g. myapp-db.'),
             planID: str('Database plan (see plans tool).'),
             version: str('Engine version (see plans tool → databaseVersions).'),
@@ -320,14 +320,15 @@ export const TOOLS = [
   },
   {
     name: 'migrate_database',
-    description: 'Copy all data from the current production database (read from a local env file) into a Liara database. Uses pg_dump/mysqldump/mongodump locally or in Docker. Only call after the user agreed to the migration.',
+    description: 'Copy all data from the current production database (read from a local env file) into a Liara database. PostgreSQL, MySQL/MariaDB, MongoDB (dump tools), ClickHouse (HTTP via curl) and Elasticsearch (elasticdump), locally or in Docker. Redis, RabbitMQ and SQL Server return manual steps instead. Only call after the user agreed to the migration.',
     inputSchema: {
       type: 'object',
       required: ['databaseId'],
       properties: {
         path: PATH,
         sourceEnvFile: str('Env file holding the current production connection (default .env.production).'),
-        sourceKey: str('Env key with the source URL, e.g. DATABASE_URL or DIRECT_URL. Default: auto.'),
+        sourceKey: str('Env key with the source URL, e.g. DATABASE_URL, DIRECT_URL, CLICKHOUSE_HOST or ELASTICSEARCH_URL. Default: auto.'),
+        sourceEngine: str('Engine of the source when the URL does not say (http URLs): clickhouse | elasticsearch.'),
         databaseId: str('Target Liara database ID or hostname.'),
         targetDbName: str('Target database name (MySQL/MongoDB).'),
         schemas: strArr('Postgres schemas to copy (default all; Supabase defaults to public).'),

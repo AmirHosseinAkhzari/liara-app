@@ -1,5 +1,13 @@
 // Small HTTP client for every Liara API (see docs/api in this repo).
 import { authCandidates } from './config.mjs';
+import { readAuthFile } from './login.mjs';
+
+// "Other saved accounts: x, y (switch with the accounts tool)." when there are any.
+function otherAccountsHint(candidates) {
+  const tried = new Set(candidates.map((c) => c.account).filter(Boolean));
+  const others = Object.keys(readAuthFile().accounts).filter((n) => !tried.has(n));
+  return others.length ? ` Other saved accounts: ${others.join(', ')} (switch with the accounts tool).` : '';
+}
 
 // Tokens Liara answered 401 for, so later calls skip them.
 const rejected = new Set();
@@ -36,7 +44,7 @@ export function createClient({ cwd = process.cwd(), token, teamID } = {}) {
       if (!auth) {
         throw new LiaraError(
           candidates.length
-            ? `Liara rejected every saved token (${candidates.map((c) => c.source).join(', ')}). Log in again with the login tool (opens the browser), or set a new LIARA_API_TOKEN.`
+            ? `Liara rejected every saved token (${candidates.map((c) => c.source).join(', ')}). Log in again with the login tool (opens the browser), or set a new LIARA_API_TOKEN.${otherAccountsHint(candidates)}`
             : 'Not logged in to Liara. Use the login tool (opens the browser, like `liara login`), or set LIARA_API_TOKEN.',
           { status: 401 },
         );

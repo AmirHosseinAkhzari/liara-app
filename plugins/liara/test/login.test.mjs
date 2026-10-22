@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import { startMock } from './mock-liara.mjs';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'liara-login-'));
@@ -44,6 +45,27 @@ function fakeConsole({ origin = 'https://console.liara.ir', delayMs = 50 } = {})
     return true;
   };
 }
+
+test('skips ports another program holds on IPv6 localhost', async () => {
+  // A dev server on [::1]:300x would otherwise receive the callback (and the tokens).
+  const blockers = [];
+  for (let p = 3001; p <= 3005; p++) {
+    const s = http.createServer((_, res) => res.end('not liara'));
+    await new Promise((resolve) => {
+      s.once('error', resolve);
+      s.listen(p, '::1', () => { blockers.push(s); resolve(); });
+    });
+  }
+  try {
+    let seen;
+    const res = await login.browserLogin({ wait: 5, openBrowserFn: async (url) => { seen = url; return fakeConsole()(url); } });
+    const port = Number(/localhost:(\d+)/.exec(Buffer.from(new URL(seen).search.slice(1), 'base64').toString())[1]);
+    assert.ok(port > 3005, `picked busy port ${port}`);
+    assert.equal(res.loggedIn, true);
+  } finally {
+    for (const s of blockers) s.close();
+  }
+});
 
 test('login URL matches the Liara CLI format', async () => {
   let seen;

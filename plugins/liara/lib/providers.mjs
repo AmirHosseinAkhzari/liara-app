@@ -20,6 +20,7 @@ export const LIARA_DB_TYPES = {
   mssql: 'mssql',
   elasticsearch: 'elasticsearch',
   rabbitmq: 'rabbitmq',
+  clickhouse: 'clickhouse',
 };
 
 // Package name → what it tells us. `engine` is for databases, `sdk` for AI/email.
@@ -48,6 +49,10 @@ export const PACKAGE_RULES = {
   tedious: { kind: 'database', engine: 'mssql' },
   '@elastic/elasticsearch': { kind: 'database', engine: 'elasticsearch' },
   amqplib: { kind: 'database', engine: 'rabbitmq' },
+  'amqp-connection-manager': { kind: 'database', engine: 'rabbitmq' },
+  '@clickhouse/client': { kind: 'database', engine: 'clickhouse' },
+  '@clickhouse/client-web': { kind: 'database', engine: 'clickhouse' },
+  clickhouse: { kind: 'database', engine: 'clickhouse' },
   'better-sqlite3': { kind: 'database', engine: 'sqlite' },
   sqlite3: { kind: 'database', engine: 'sqlite' },
   '@libsql/client': { kind: 'database', engine: 'sqlite', provider: 'Turso' },
@@ -130,6 +135,14 @@ export const PACKAGE_RULES = {
   'py:django-redis': { kind: 'database', engine: 'redis' },
   'py:celery': { kind: 'database', engine: 'redis', maybe: true },
   'py:sqlalchemy': { kind: 'database', orm: 'sqlalchemy' },
+  'py:clickhouse-connect': { kind: 'database', engine: 'clickhouse' },
+  'py:clickhouse-driver': { kind: 'database', engine: 'clickhouse' },
+  'py:elasticsearch': { kind: 'database', engine: 'elasticsearch' },
+  'py:elasticsearch-dsl': { kind: 'database', engine: 'elasticsearch' },
+  'py:pika': { kind: 'database', engine: 'rabbitmq' },
+  'py:aio-pika': { kind: 'database', engine: 'rabbitmq' },
+  'py:pymssql': { kind: 'database', engine: 'mssql' },
+  'py:mssql-django': { kind: 'database', engine: 'mssql' },
   'py:supabase': { kind: 'database', engine: 'postgres', provider: 'Supabase' },
   'py:boto3': { kind: 'storage', maybe: true },
   'py:django-storages': { kind: 'storage' },
@@ -157,6 +170,10 @@ export const PACKAGE_RULES = {
   'php:predis/predis': { kind: 'database', engine: 'redis' },
   'php:mongodb/laravel-mongodb': { kind: 'database', engine: 'mongodb' },
   'php:jenssegers/mongodb': { kind: 'database', engine: 'mongodb' },
+  'php:smi2/phpclickhouse': { kind: 'database', engine: 'clickhouse' },
+  'php:elasticsearch/elasticsearch': { kind: 'database', engine: 'elasticsearch' },
+  'php:php-amqplib/php-amqplib': { kind: 'database', engine: 'rabbitmq' },
+  'php:vladimir-yuldashev/laravel-queue-rabbitmq': { kind: 'database', engine: 'rabbitmq' },
   'php:openai-php/client': { kind: 'ai', sdk: 'openai' },
   'php:openai-php/laravel': { kind: 'ai', sdk: 'openai' },
   'php:symfony/mailgun-mailer': { kind: 'email', provider: 'Mailgun', sdk: 'api' },
@@ -173,6 +190,13 @@ export const PACKAGE_RULES = {
   'go:gorm.io/driver/postgres': { kind: 'database', engine: 'postgres' },
   'go:gorm.io/driver/mysql': { kind: 'database', engine: 'mysql' },
   'go:gorm.io/driver/sqlite': { kind: 'database', engine: 'sqlite' },
+  'go:gorm.io/driver/sqlserver': { kind: 'database', engine: 'mssql' },
+  'go:gorm.io/driver/clickhouse': { kind: 'database', engine: 'clickhouse' },
+  'go:github.com/ClickHouse/clickhouse-go/v2': { kind: 'database', engine: 'clickhouse' },
+  'go:github.com/elastic/go-elasticsearch/v8': { kind: 'database', engine: 'elasticsearch' },
+  'go:github.com/rabbitmq/amqp091-go': { kind: 'database', engine: 'rabbitmq' },
+  'go:github.com/microsoft/go-mssqldb': { kind: 'database', engine: 'mssql' },
+  'go:github.com/denisenkom/go-mssqldb': { kind: 'database', engine: 'mssql' },
   'go:github.com/aws/aws-sdk-go-v2/service/s3': { kind: 'storage' },
   'go:github.com/minio/minio-go/v7': { kind: 'storage' },
   'go:github.com/sashabaranov/go-openai': { kind: 'ai', sdk: 'openai' },
@@ -187,6 +211,11 @@ export const PACKAGE_RULES = {
   'nuget:StackExchange.Redis': { kind: 'database', engine: 'redis' },
   'nuget:Microsoft.EntityFrameworkCore.SqlServer': { kind: 'database', engine: 'mssql' },
   'nuget:Microsoft.EntityFrameworkCore.Sqlite': { kind: 'database', engine: 'sqlite' },
+  'nuget:Microsoft.Data.SqlClient': { kind: 'database', engine: 'mssql' },
+  'nuget:ClickHouse.Client': { kind: 'database', engine: 'clickhouse' },
+  'nuget:Elastic.Clients.Elasticsearch': { kind: 'database', engine: 'elasticsearch' },
+  'nuget:NEST': { kind: 'database', engine: 'elasticsearch' },
+  'nuget:RabbitMQ.Client': { kind: 'database', engine: 'rabbitmq' },
   'nuget:AWSSDK.S3': { kind: 'storage' },
   'nuget:Minio': { kind: 'storage' },
   'nuget:MailKit': { kind: 'email', sdk: 'smtp' },
@@ -222,14 +251,14 @@ export const ENV_KEY_RULES = [
   { re: /^(SMTP_|MAIL_|EMAIL_|SENDGRID|RESEND_|MAILGUN_|POSTMARK|SES_|MAILERSEND|BREVO|SENDINBLUE|MAILJET|NODEMAILER)/, kind: 'email' },
   { re: /^(LIARA_(ENDPOINT|BUCKET|ACCESS_KEY|SECRET_KEY)|AWS_(S3|BUCKET|ENDPOINT|USE_PATH_STYLE|URL$)|S3_|BUCKET|MINIO_|R2_|CLOUDINARY|BLOB_READ_WRITE_TOKEN|SPACES_|ARVAN_|STORAGE_(BUCKET|ENDPOINT|ACCESS|SECRET|KEY|REGION|URL)|OBJECT_STORAGE|FILESYSTEM_DISK$|DEFAULT_FILE_STORAGE$|UPLOADTHING_)/, kind: 'storage' },
   { re: /^(AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_DEFAULT_REGION|AWS_REGION)$/, kind: 'storage', weak: true },
-  { re: /^(DATABASE_URL|DIRECT_URL|SHADOW_DATABASE_URL|DB_|DATABASE_|POSTGRES|PG(HOST|PORT|USER|PASSWORD|DATABASE)$|MYSQL|MARIADB|MONGO|REDIS|KV_|UPSTASH_REDIS|CACHE_URL|CELERY_BROKER|BROKER_URL|AMQP_|RABBITMQ|ELASTIC|SQL_|MSSQL|TURSO_|SUPABASE_)/, kind: 'database' },
+  { re: /^(DATABASE_URL|DIRECT_URL|SHADOW_DATABASE_URL|DB_|DATABASE_|POSTGRES|PG(HOST|PORT|USER|PASSWORD|DATABASE)$|MYSQL|MARIADB|MONGO|REDIS|KV_|UPSTASH_REDIS|CACHE_URL|CELERY_BROKER|BROKER_URL|AMQP_|RABBITMQ|ELASTIC|CLICKHOUSE_|SQL_|MSSQL|TURSO_|SUPABASE_)/, kind: 'database' },
 ];
 
 // Keys whose value is the public URL of the app → custom domain candidates.
 export const DOMAIN_KEY_RE = /^(APP_URL|SITE_URL|BASE_URL|PUBLIC_URL|WEBSITE_URL|FRONTEND_URL|CLIENT_URL|SERVER_URL|API_URL|NEXT_PUBLIC_(SITE|APP|BASE|WEB)_URL|NEXTAUTH_URL|AUTH_URL|VITE_(APP|SITE|BASE|API)_URL|NUXT_PUBLIC_SITE_URL|PUBLIC_SITE_URL|DOMAIN|APP_DOMAIN|SITE_DOMAIN|ALLOWED_HOSTS|DJANGO_ALLOWED_HOSTS|CSRF_TRUSTED_ORIGINS|CORS_ORIGINS?|SESSION_DOMAIN|SANCTUM_STATEFUL_DOMAINS)$/;
 
 // Host suffix → provider, per kind. "local" means a dev machine / docker-compose.
-const LOCAL_HOSTS = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|::1|host\.docker\.internal|db|database|postgres|postgresql|mysql|mariadb|mongo|mongodb|redis|cache|minio|mailhog|mailpit|smtp|rabbitmq|elasticsearch)$/i;
+const LOCAL_HOSTS = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|::1|host\.docker\.internal|db|database|postgres|postgresql|mysql|mariadb|mongo|mongodb|redis|cache|minio|mailhog|mailpit|smtp|rabbitmq|elasticsearch|clickhouse)$/i;
 
 const HOST_PROVIDERS = [
   // Liara itself
@@ -250,6 +279,10 @@ const HOST_PROVIDERS = [
   { re: /database\.azure\.com$/i, provider: 'Azure Database' },
   { re: /(elephantsql\.com)$/i, provider: 'ElephantSQL' },
   { re: /turso\.io$/i, provider: 'Turso' },
+  { re: /clickhouse\.cloud$/i, provider: 'ClickHouse Cloud' },
+  { re: /(elastic-cloud\.com|cloud\.es\.io|found\.io)$/i, provider: 'Elastic Cloud' },
+  { re: /bonsai(search)?\.(io|net)$/i, provider: 'Bonsai Elasticsearch' },
+  { re: /cloudamqp\.com$/i, provider: 'CloudAMQP' },
   { re: /(arvancloud\.ir|arvancloud\.com|arvanstorage\.ir|arvanstorage\.com)$/i, provider: 'ArvanCloud' },
   { re: /(hamravesh\.com|darkube\.app)$/i, provider: 'Hamravesh' },
   { re: /(chabokan\.net)$/i, provider: 'Chabokan' },
@@ -341,12 +374,14 @@ export function engineFromUrl(value) {
   if (s.startsWith('redis') || s === 'rediss') return 'redis';
   if (s.startsWith('sqlserver') || s.startsWith('mssql')) return 'mssql';
   if (s.startsWith('amqp')) return 'rabbitmq';
+  if (s.startsWith('clickhouse')) return 'clickhouse';
   if (s.startsWith('libsql') || s.startsWith('file') || s.startsWith('sqlite')) return 'sqlite';
   return null;
 }
 
 export function engineFromKey(key) {
   const k = key.toUpperCase();
+  if (/CLICKHOUSE/.test(k)) return 'clickhouse';
   if (/POSTGRES|^PG|PGSQL/.test(k)) return 'postgres';
   if (/MARIADB/.test(k)) return 'mariadb';
   if (/MYSQL/.test(k)) return 'mysql';
@@ -369,5 +404,6 @@ export function engineFromName(name) {
   if (/sqlite/.test(n)) return 'sqlite';
   if (/sqlsrv|mssql|sqlserver/.test(n)) return 'mssql';
   if (/redis/.test(n)) return 'redis';
+  if (/clickhouse/.test(n)) return 'clickhouse';
   return null;
 }

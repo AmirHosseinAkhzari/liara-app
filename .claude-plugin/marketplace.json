@@ -11,7 +11,7 @@
       "name": "liara",
       "source": "./plugins/liara",
       "description": "Auto-deploy any project to Liara and connect Liara databases, object storage, mail, DNS and AI.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "category": "deployment"
     }
   ]

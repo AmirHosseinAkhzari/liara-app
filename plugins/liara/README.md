@@ -4,14 +4,14 @@ Say **"deploy this to Liara"** (or run `/liara:deploy`) in any project. Claude w
 
 1. **Detect the project** — language, framework, Liara platform, port, build setup, current host (Vercel, Netlify, Heroku-style, …).
 2. **Find the services it uses** — from dependencies, env files, docker-compose and the code itself:
-   - database (PostgreSQL, MySQL, MariaDB, MongoDB, Redis, SQL Server, Elasticsearch, RabbitMQ, SQLite)
+   - database: every engine Liara offers (PostgreSQL with PostGIS/pgvector, MySQL, MariaDB, MongoDB, Redis, SQL Server, Elasticsearch, RabbitMQ, ClickHouse), plus SQLite
    - S3 / object storage (AWS S3, Cloudflare R2, ArvanCloud, MinIO, Cloudinary, …)
    - email (SMTP, Resend, SendGrid, Mailgun, SES, …)
    - DNS / custom domains (and who runs the DNS today)
    - AI (OpenAI, Anthropic, Gemini, OpenRouter, Iranian proxies, Ollama, …)
    - other APIs and secrets (Stripe, Sentry, SMS, payment gateways, `APP_KEY`, …)
 3. **Connect Liara automatically** where Liara has an equivalent and nothing is in production yet (local/docker-compose/not configured): creates the database, bucket, mail server or AI workspace and writes the credentials into the app's env vars **using the variable names your code already reads**.
-4. **Ask before switching production** — if production uses another provider: *"Production uses Supabase for PostgreSQL. Switch to Liara PostgreSQL and transfer all data?"* On yes it copies the data (pg_dump / mysqldump / mongodump, rclone for buckets, DNS records), then reconnects. On no it copies the existing settings into Liara env vars.
+4. **Ask before switching production** — if production uses another provider: *"Production uses Supabase for PostgreSQL. Switch to Liara PostgreSQL and transfer all data?"* On yes it copies the data (pg_dump / mysqldump / mongodump, ClickHouse over HTTP with curl, elasticdump for Elasticsearch, rclone for buckets, DNS records), then reconnects. Redis, RabbitMQ and SQL Server data is not copied automatically; Claude gives the manual steps. On no it copies the existing settings into Liara env vars.
 5. **Deploy** — packs the source (respects `.gitignore` and `.liaraignore`, never uploads `.env` files), uploads, releases, waits, reads build logs and fixes failures. Saves `liara.json`.
 
 Secrets never appear in the chat: the tools read `.env` files and Liara credentials themselves and only return masked values.
@@ -32,11 +32,13 @@ Or inside Claude Code: `/plugin marketplace add <path-or-github-repo>` then `/pl
 
 For development, load it directly: `claude --plugin-dir ./plugins/liara`.
 
-Requires **Node.js 20+**. Data transfer needs `pg_dump`/`psql`, `mysqldump`/`mysql`, `mongodump`/`mongorestore` or Docker; bucket transfer needs `rclone` or Docker.
+Requires **Node.js 20+**. Data transfer needs `pg_dump`/`psql`, `mysqldump`/`mysql`, `mongodump`/`mongorestore`, `curl` (ClickHouse), `multielasticdump` (Elasticsearch) or Docker; bucket transfer needs `rclone` or Docker.
 
 ## Log in
 
 Run `/liara:login` (or just start a deploy). Your browser opens the Liara login page; sign in and come back to Claude — that's it. It's the same browser login as `liara login`, saved in `~/.liara-auth.json`, so the plugin and the Liara CLI share one login. The token never appears in the chat.
+
+The login listens on the first port from 3001 that is free on both `127.0.0.1` and `::1`, so a dev server already running on 3001 can't receive the token. The file is kept readable only by you (`chmod 600`).
 
 Other ways, checked in this order (a rejected token is skipped automatically):
 
@@ -73,7 +75,7 @@ node plugins/liara/bin/liara-tool.mjs scan_project '{"path":"."}'
 cd plugins/liara && npm test
 ```
 
-Runs the scanner on sample projects and the full flow (create app → database → storage → AI → mail → secrets → DNS → deploy) against a local mock of the Liara API.
+Runs the scanner on sample projects, the full flow (create app → database → storage → AI → mail → secrets → DNS → deploy) against a local mock of the Liara API, the browser login against a fake console, and the ClickHouse copy script against fake ClickHouse servers. Tests use a temporary login file and never touch `~/.liara-auth.json`.
 
 ## Known gaps
 
