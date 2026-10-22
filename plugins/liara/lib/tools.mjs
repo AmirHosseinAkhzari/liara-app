@@ -15,6 +15,7 @@ import { verifyApp, diagnose } from './verify.mjs';
 import { serviceStatus } from './status.mjs';
 import { searchDocs, readDoc } from './docs.mjs';
 import { inspectGithub, setupAutoDeploy, autoDeployStatus } from './github.mjs';
+import { buildReport, checkReport, writeReportFile } from './report.mjs';
 import { parseEnvFile } from './envfiles.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -528,6 +529,35 @@ export const TOOLS = [
     },
   },
   {
+    name: 'write_report',
+    description: 'Write a static, self-contained HTML report (no JavaScript, works offline, Liara branding, Persian RTL or English) of what was actually done in this session: actions with results and approvals, infrastructure created/reused, env var names (never values), deployment result, health checks, issues and fixes, live-priced costs, remaining tasks and docs links. Facts come from the recorded actions; pass only the narrative. Saved under <project>/liara-reports/ (never deployed). Then give the user the file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: PATH,
+        lang: str('fa (Persian, right-to-left) or en. Default: the language the user writes in.', { enum: ['fa', 'en'] }),
+        operation: str('deployment | vps | troubleshooting | configuration | other', { enum: ['deployment', 'vps', 'troubleshooting', 'configuration', 'other'] }),
+        request: str('What the user asked for, in one or two sentences.'),
+        summary: str('What was accomplished, honestly (say what failed or was skipped).'),
+        issues: { type: 'array', description: 'Problems met and what was done.', items: { type: 'object', properties: { problem: str('Problem.'), cause: str('Cause found from evidence.'), fix: str('Fix applied or proposed.'), resolved: bool('Confirmed fixed by a check.') } } },
+        remaining: strArr('Manual steps or open items for the user.'),
+        docs: { type: 'array', description: 'Official links (from docs_search).', items: { type: 'object', properties: { title: str('Title.'), url: str('https URL.') } } },
+      },
+    },
+    async handler(args, api, ctx) {
+      const root = path.resolve(ctx.cwd, args.path || '.');
+      const project = fs.existsSync(root) ? await detectProject(root, { checkDns: false }).catch(() => null) : null;
+      const now = new Date();
+      const { html, appName, sections } = await buildReport({ ...args, lang: args.lang || 'en', operation: args.operation || 'deployment', project, api, now });
+      const check = checkReport(html);
+      if (!check.ok) throw new Error(`Report failed its checks: ${check.problems.join('; ')}`);
+      const file = writeReportFile(root, html, { appName, operation: args.operation || 'deployment', lang: args.lang || 'en', now });
+      const written = fs.readFileSync(file, 'utf8');
+      if (written !== html) throw new Error('The report file could not be written correctly.');
+      return { written: true, file, fileUrl: `file://${encodeURI(file)}`, bytes: Buffer.byteLength(written), sections, language: args.lang || 'en', checks: { static: true, noScript: true, noExternalResources: true, ...check }, next: 'Send the file to the user (attach it) and mention where it is saved. liara-reports/ is never uploaded by deploy; consider adding it to .gitignore.' };
+    },
+  },
+  {
     name: 'vps_list',
     description: 'Cloud VPSes on the account (name, plan, OS, state, power, IPs, SSH port). With vm: one VPS in detail. Root passwords are never returned.',
     inputSchema: { type: 'object', properties: { vm: str('VPS name or ID for details.') } },
@@ -651,6 +681,9 @@ export const TOOLS = [
     handler: ({ service, method, path: p, body, query }, api) => api.request(service, method.toUpperCase(), p, { body, query }),
   },
 ];
+
+// Which price list a billable tool's plan belongs to (for reports).
+const PRICE_KIND = { create_app: 'app', deploy: 'app', connect_database: 'database', connect_storage: 'bucket', connect_mail: 'mail', create_vm: 'vps', vm_action: 'vps' };
 
 // Tools that act on the login itself, not on an account's resources.
 const ACCOUNT_LEVEL = new Set(['login', 'accounts', 'logout']);
@@ -904,7 +937,8 @@ export async function callTool(name, args = {}, { cwd = process.cwd(), elicit = 
   const risk = consent?.risk || toolRisk(name);
   try {
     const result = await tool.handler(args, api, ctx);
-    record({ tool: name, risk, account, target: consent?.target || args.app || args.bucket || args.domain || args.name, consent: via, outcome: result?.cancelled ? 'declined' : result?.success === false ? 'failed' : 'done', result, started });
+    const billed = consent?.risk === 'billable' ? { plan: consent.plan, bundle: consent.bundle, kind: PRICE_KIND[name] } : {};
+    record({ tool: name, risk, account, target: consent?.target || args.app || args.bucket || args.domain || args.name, consent: via, outcome: result?.cancelled ? 'declined' : result?.success === false ? 'failed' : result?.created === false ? 'reused' : 'done', result, started, ...billed });
     return result;
   } catch (err) {
     // A resource "not found" is often just in another account: say where we looked.

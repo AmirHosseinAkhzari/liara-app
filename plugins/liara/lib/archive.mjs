@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const ALWAYS_EXCLUDE = [
-  /^\.git(\/|$)/, /(^|\/)node_modules(\/|$)/, /^\.liara(\/|$)/, /(^|\/)\.DS_Store$/, /(^|\/)__pycache__(\/|$)/,
+  /^\.git(\/|$)/, /(^|\/)node_modules(\/|$)/, /^\.liara(\/|$)/, /^liara-reports(\/|$)/, /(^|\/)\.DS_Store$/, /(^|\/)__pycache__(\/|$)/,
   /^\.venv(\/|$)/, /^venv(\/|$)/, /^\.next(\/|$)/, /^\.nuxt(\/|$)/, /^\.output(\/|$)/, /^\.svelte-kit(\/|$)/,
   /^\.vercel(\/|$)/, /^\.netlify(\/|$)/, /^\.turbo(\/|$)/, /^\.cache(\/|$)/, /^coverage(\/|$)/, /\.log$/,
   /^\.idea(\/|$)/, /^\.vscode(\/|$)/, /(^|\/)\.terraform(\/|$)/,

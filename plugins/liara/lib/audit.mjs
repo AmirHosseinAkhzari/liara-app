@@ -13,7 +13,7 @@ export const sessionJournal = () => journal.slice();
 export const clearJournal = () => journal.splice(0);
 
 // Only these result fields are kept: they describe the outcome, never credentials.
-const KEEP = ['success', 'state', 'status', 'created', 'cancelled', 'confirmationRequired', 'app', 'url', 'releaseID', 'platform', 'port', 'plan', 'bundle', 'steps', 'hint', 'category', 'verdict', 'error', 'path', 'monthlyToman', 'totalMonthlyToman', 'healthy', 'checks', 'missingEnvKeys', 'changed', 'skipped', 'vm', 'taskID'];
+const KEEP = ['success', 'state', 'status', 'created', 'cancelled', 'confirmationRequired', 'app', 'url', 'releaseID', 'platform', 'port', 'plan', 'bundle', 'steps', 'hint', 'category', 'verdict', 'error', 'path', 'monthlyToman', 'totalMonthlyToman', 'healthy', 'checks', 'missingEnvKeys', 'changed', 'skipped', 'vm', 'taskID', 'notVerified', 'explanation', 'suggestedFix', 'written', 'file', 'verified', 'deleted', 'type', 'name'];
 
 function pick(result) {
   if (!result || typeof result !== 'object') return typeof result === 'string' ? { text: result.slice(0, 300) } : {};
@@ -33,7 +33,7 @@ function pick(result) {
   return out;
 }
 
-export function record({ tool, risk, account, target, consent, outcome, result, error, started }) {
+export function record({ tool, risk, account, target, consent, outcome, result, error, started, plan, bundle, kind }) {
   const entry = {
     time: new Date().toISOString(),
     tool,
@@ -41,6 +41,7 @@ export function record({ tool, risk, account, target, consent, outcome, result, 
     account,
     target: target || null,
     consent: consent || null,
+    ...(plan ? { plan, bundle: bundle || undefined, kind: kind || undefined } : {}),
     outcome,
     ms: started ? Date.now() - started : undefined,
     ...(error ? { error: String(error).slice(0, 500) } : {}),
