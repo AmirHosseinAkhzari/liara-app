@@ -180,6 +180,7 @@ export async function diagnose(api, { app, releaseID, path: projectPath, logMinu
   let report = null;
   if (projectPath) report = await detectProject(path.resolve(projectPath), { checkDns: false }).catch(() => null);
   const config = [];
+  if (!rel.releaseID) config.push({ category: 'liara-config', explanation: 'This app has no release yet: the deploy never reached Liara\'s build (the source upload or the release request failed).', suggestedFix: 'Read the error the deploy tool returned (e.g. upload refused, plan or network missing), fix that, and deploy again.', evidence: ['no releases for this app'] });
   if (project.scale === 0) config.push({ category: 'liara-config', explanation: 'The app is stopped (scale 0).', suggestedFix: 'Start it with app_action {action: "start"}.', evidence: ['scale: 0'] });
   if (report) {
     if (report.platform && project.type && project.type !== report.platform) config.push({ category: 'liara-config', explanation: `The Liara app was created as "${project.type}" but the project is "${report.platform}".`, suggestedFix: 'Deploy with the app\'s platform, or create a new app with the right platform.', evidence: [`app type ${project.type}`, `project ${report.platform}`] });

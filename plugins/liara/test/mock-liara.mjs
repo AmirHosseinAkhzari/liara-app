@@ -108,6 +108,9 @@ export function startMock() {
         if (!mine(state.projects[mm[1]])) return send(404, { message: 'App does not exists.' });
         // pull the gz part out of the multipart body and list the tar entries
         const boundary = (req.headers['content-type'] || '').split('boundary=')[1];
+        // Like the live API: the file part must say it is gzip or zip.
+        const partType = raw.toString('latin1').match(/Content-Type:\s*([^\r\n]+)/i)?.[1]?.trim();
+        if (!/^application\/(gzip|x-gzip|zip)$/.test(partType || '')) return send(400, { message: 'Invalid file type. Allowed types: gzip, zip' });
         const start = raw.indexOf(Buffer.from([0x1f, 0x8b]));
         const end = raw.indexOf(Buffer.from(`\r\n--${boundary}`), start);
         const tar = zlib.gunzipSync(raw.subarray(start, end));

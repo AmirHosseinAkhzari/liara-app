@@ -94,6 +94,11 @@ test('verify_app sees a down app and log errors', async () => {
   }
 });
 
+test('diagnose says when there is no release at all', async () => {
+  const d = await callTool('diagnose', { app: 'orders' });
+  assert.ok([d, ...d.otherFindings].some((f) => /has no release yet/.test(f.explanation || '')));
+});
+
 test('diagnose names the cause from the build log, with the evidence', async () => {
   mock.state.releases.orders = [{ _id: 'relX', state: 'FAILED', port: 3000, type: 'node' }];
   mock.state.buildLogs.relX = ['> orders@1.0.0 build', 'npm ERR! missing script: start', 'Build failed'];

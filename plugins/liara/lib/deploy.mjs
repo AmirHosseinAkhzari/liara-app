@@ -253,7 +253,10 @@ export async function deploy(api, args) {
 
   let sourceID;
   try {
-    const blob = fs.openAsBlob ? await fs.openAsBlob(archive.file) : new Blob([fs.readFileSync(archive.file)]);
+    // Liara checks the part's type ("Invalid file type. Allowed types: gzip, zip"); the CLI's
+    // form-data sends application/gzip for .tar.gz. Without it the upload is refused (seen live).
+    const type = 'application/gzip';
+    const blob = fs.openAsBlob ? await fs.openAsBlob(archive.file, { type }) : new Blob([fs.readFileSync(archive.file)], { type });
     const form = new FormData();
     form.append('file', blob, 'source.tar.gz');
     const up = await api.request('paas', 'POST', `/v2/projects/${encodeURIComponent(app)}/sources`, { form, timeoutMs: 15 * 60_000 });
