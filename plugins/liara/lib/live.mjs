@@ -1,20 +1,24 @@
 // The live progress page: a small web server on 127.0.0.1 (random port, secret path) that
-// the user opens in their browser to watch a deploy as it happens. Every step the plugin
+// the user opens in their browser to watch deploys as they happen. Every step the plugin
 // takes is an event (tool calls, upload, build state and log, build location, health
 // checks, diagnoses, Claude's notes); the page receives them over Server-Sent Events.
-// Read-only and local: only GET, only this computer's address, every text scrubbed of secrets.
+// The page can also answer questions (approvals, choices): a click POSTs the answer back,
+// and whichever comes first, the page or Claude, wins. It can download the deploy report.
+// Local only: this computer's address, a secret path, same-origin POSTs, secrets scrubbed.
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { scrubLine } from './verify.mjs';
 import { openBrowser } from './login.mjs';
 import { livePageHtml } from './livepage.mjs';
 
-const MAX_EVENTS = 1000;
+const MAX_EVENTS = 2000;
 const events = [];
 const clients = new Set();
+const questions = new Map(); // id → { resolve, options }
 let seq = 0;
 let server = null;
 let base = null;
+let reportProvider = null;
 
 function clean(x, depth = 0) {
   if (typeof x === 'string') return scrubLine(x).slice(0, 2000);
@@ -36,9 +40,54 @@ export function liveEvent(e) {
 export const liveEvents = () => events.slice();
 export const liveActive = () => Boolean(server);
 export const liveUrl = () => base;
+// Someone has the page open right now.
+export const liveConnected = () => clients.size > 0;
+export const setReportProvider = (fn) => { reportProvider = fn; };
 
 // The browser opens unless LIARA_LIVE_PAGE=off, and never during tests.
 export const liveBrowserAllowed = () => process.env.LIARA_LIVE_PAGE !== 'off' && !process.env.NODE_TEST_CONTEXT;
+// How long a question waits on the page before Claude asks in chat instead.
+export const pageAnswerMs = () => {
+  const n = Number(process.env.LIARA_PAGE_ANSWER_SECONDS ?? 90);
+  return (Number.isFinite(n) && n >= 0 ? n : 90) * 1000;
+};
+
+// Wait until a page connects (just after the browser opens), at most ms.
+export async function waitForClient(ms) {
+  const end = Date.now() + ms;
+  while (!clients.size && Date.now() < end) await new Promise((r) => setTimeout(r, 200));
+  return clients.size > 0;
+}
+
+// Ask on the page. options: [{ id, label, primary? }]. Resolves to the chosen id, or null when
+// nobody answered in time. closeQuestion() ends it early (answered in Claude).
+export function askOnPage({ text, options, details, app, timeoutMs = pageAnswerMs() }) {
+  const id = crypto.randomBytes(8).toString('hex');
+  liveEvent({ type: 'question', qid: id, text, options, details, app });
+  return {
+    id,
+    answer: new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        questions.delete(id);
+        liveEvent({ type: 'answer', qid: id, choice: null, by: 'timeout' });
+        resolve(null);
+      }, timeoutMs);
+      timer.unref?.();
+      questions.set(id, {
+        options: new Set(options.map((o) => o.id)),
+        resolve: (choice, by) => {
+          clearTimeout(timer);
+          questions.delete(id);
+          liveEvent({ type: 'answer', qid: id, choice, by });
+          resolve(choice);
+        },
+      });
+    }),
+  };
+}
+export function closeQuestion(id, choice, by = 'claude') {
+  questions.get(id)?.resolve(choice, by);
+}
 
 // Start the server (once per session) and open the page. Returns { url, opened, started }.
 export async function startLive({ open = true, openFn = openBrowser } = {}) {
@@ -62,6 +111,7 @@ export async function startLive({ open = true, openFn = openBrowser } = {}) {
 export async function stopLive() {
   for (const res of clients) res.end();
   clients.clear();
+  for (const q of questions.values()) q.resolve(null, 'closed');
   if (server) {
     const s = server;
     server = null;
@@ -74,26 +124,76 @@ export function clearLive() {
   events.splice(0);
 }
 
-function handle(req, res, token, s) {
+function readBody(req, limit = 4096) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) { reject(new Error('too large')); req.destroy(); } else chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+async function handle(req, res, token, s) {
   const port = s.address().port;
+  const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
   // Only this computer's own address: a page on another site can't reach it (DNS rebinding).
-  if (req.headers.host !== `127.0.0.1:${port}` && req.headers.host !== `localhost:${port}`) {
+  if (!hosts.includes(req.headers.host)) {
     res.writeHead(403).end();
-    return;
-  }
-  if (req.method !== 'GET') {
-    res.writeHead(405, { allow: 'GET' }).end();
     return;
   }
   const { pathname } = new URL(req.url, `http://127.0.0.1:${port}`);
   const common = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' };
+
+  if (req.method === 'POST' && pathname === `/${token}/answer`) {
+    // Same-origin only: another site can't answer for the user.
+    if (!hosts.some((h) => req.headers.origin === `http://${h}`) || !/^application\/json\b/.test(req.headers['content-type'] || '')) {
+      res.writeHead(403, common).end();
+      return;
+    }
+    try {
+      const { qid, choice } = JSON.parse(await readBody(req));
+      const q = questions.get(String(qid));
+      if (!q || !q.options.has(String(choice))) {
+        res.writeHead(409, { ...common, 'content-type': 'application/json' }).end('{"ok":false,"why":"This question was already answered or has expired."}');
+        return;
+      }
+      q.resolve(String(choice), 'page');
+      res.writeHead(200, { ...common, 'content-type': 'application/json' }).end('{"ok":true}');
+    } catch {
+      res.writeHead(400, common).end();
+    }
+    return;
+  }
+  if (req.method !== 'GET') {
+    res.writeHead(405, { allow: 'GET, POST' }).end();
+    return;
+  }
   if (pathname === `/${token}/`) {
     res.writeHead(200, {
       ...common,
       'content-type': 'text/html; charset=utf-8',
-      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; font-src data:; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      // frame-src: the deployed app's own page is shown in a preview frame.
+      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; font-src data:; img-src data:; frame-src https: http:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     });
     res.end(livePageHtml());
+    return;
+  }
+  if (pathname === `/${token}/report`) {
+    if (!reportProvider) {
+      res.writeHead(404, common).end();
+      return;
+    }
+    try {
+      const { html, appName } = await reportProvider();
+      const name = `liara-deploy-report-${String(appName || 'app').replace(/[^a-z0-9-]/gi, '-')}.html`;
+      res.writeHead(200, { ...common, 'content-type': 'text/html; charset=utf-8', 'content-disposition': `attachment; filename="${name}"` });
+      res.end(html);
+    } catch (err) {
+      res.writeHead(500, { ...common, 'content-type': 'text/plain; charset=utf-8' }).end(scrubLine(`Report failed: ${err.message}`));
+    }
     return;
   }
   if (pathname === `/${token}/events`) {

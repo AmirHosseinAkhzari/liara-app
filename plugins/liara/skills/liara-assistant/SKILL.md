@@ -39,7 +39,7 @@ Same ground rules as the liara-deploy skill: consent dialogs (or `confirmationRe
 
 ## Troubleshooting a running app
 
-`verify_app {app, path}` → `diagnose {app, path}` → explain the evidence → minimal fix (made by you, not asked of the user, unless it needs money, a secret, deleting data or a product decision) → `live_progress {note}` → redeploy → `verify_app`. Don't retry without new evidence. A build that ran out of time (`buildTimedOut`) gets more time with `change_app_plan` and the bundle in `upgradeForBuildTime`.
+`verify_app {app, path}` → `diagnose {app, path}` → explain the evidence → minimal fix (made by you, not asked of the user, unless it needs money, a secret, deleting data or a product decision) → `live_progress {note}` → redeploy → `verify_app`. Don't retry without new evidence. A build that ran out of time (`buildTimedOut`): `ask` the user (in Claude and on the live page) whether to upgrade to the bundle in `upgradeForBuildTime` (`change_app_plan`) or try again. When the app is live, give its URL.
 
 ## Automatic deploys from GitHub
 

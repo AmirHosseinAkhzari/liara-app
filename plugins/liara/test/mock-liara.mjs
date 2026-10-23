@@ -144,8 +144,16 @@ export function startMock() {
         const rid = id('rel');
         let st = 'READY';
         if (state.germanySilent && body.build?.location === 'germany') { st = 'FAILED'; state.buildLogs = { ...state.buildLogs, [rid]: [] }; }
-        if (state.buildTimeout) { st = 'TIMEOUT'; state.buildTimeout = false; state.buildLogs = { ...state.buildLogs, [rid]: ['npm ci', 'Build timed out after 5 minutes'] }; }
-        state.releases[mm[1]] = [{ _id: rid, state: st, port: body.port, type: body.type, body, createdAt: 'now', finishedAt: 'now' }, ...(state.releases[mm[1]] || [])];
+        if (state.buildTimeout === true || state.buildTimeout === mm[1]) { st = 'TIMEOUT'; state.buildTimeout = false; state.buildLogs = { ...state.buildLogs, [rid]: ['npm ci', 'Build timed out after 5 minutes'] }; }
+        const rel = { _id: rid, state: st, port: body.port, type: body.type, body, createdAt: 'now', finishedAt: 'now' };
+        // slowBuild: { ms, lines } — the build runs for ms, its log grows line by line (demos).
+        if (state.slowBuild) {
+          const { ms, lines = [] } = state.slowBuild;
+          const t0 = Date.now();
+          rel.final = st; rel.state = 'BUILDING'; rel.readyAt = t0 + ms;
+          rel.timedLog = lines.map((line, i) => ({ at: t0 + Math.round(((i + 1) * ms) / (lines.length + 1)), line }));
+        }
+        state.releases[mm[1]] = [rel, ...(state.releases[mm[1]] || [])];
         return send(200, { releaseID: rid });
       }
       if ((mm = p.match(/^\/v1\/projects\/([^/]+)\/resize$/)) && m === 'POST') {
@@ -157,6 +165,7 @@ export function startMock() {
       }
       if ((mm = p.match(/^\/v1\/projects\/([^/]+)\/releases$/)) && m === 'GET') {
         const list = state.releases[mm[1]] || [];
+        for (const r of list) if (r.readyAt && Date.now() >= r.readyAt) { r.state = r.final; delete r.readyAt; }
         return send(200, { total: list.length, currentRelease: list[0]?._id, releases: list });
       }
       // Like the live API: v1 logs only tell old clients to upgrade; v2 has the lines.
@@ -164,6 +173,13 @@ export function startMock() {
       if ((mm = p.match(/^\/v2\/projects\/([^/]+)\/logs$/))) {
         const lines = state.logs?.[mm[1]] || ['listening on 3000'];
         return send(200, { data: [{ metaData: { releaseId: 'rel' }, values: lines.map((line, i) => [String(BigInt(Date.now() - 60_000 + i) * 1_000_000n), JSON.stringify({ type: 'stdout', _entry: line })]) }] });
+      }
+      if ((mm = p.match(/^\/v2\/releases\/([^/]+)\/build-logs$/))) {
+        const r = Object.values(state.releases).flat().find((x) => x._id === mm[1]);
+        if (r?.timedLog) {
+          const lines = r.timedLog.filter((x) => x.at <= Date.now()).map((x) => x.line);
+          return send(200, [...lines, ...(r.readyAt ? [] : state.buildLogs?.[mm[1]] || [])].map((line) => ({ line: `${line}\n` })));
+        }
       }
       if ((mm = p.match(/^\/v2\/releases\/([^/]+)\/build-logs$/))) return state.buildLogs?.[mm[1]] ? send(200, state.buildLogs[mm[1]].map((line) => ({ line: `${line}\n` }))) : send(404, {});
       if (m === 'POST' && p === '/v1/domains') {

@@ -181,3 +181,71 @@ test('live page: a refused Germany build and a build timeout show up as events',
   assert.equal(t.upgrade.bundlePlanID, 'pro');
   assert.ok(evs.some((e) => e.type === 'log' && e.lines.includes('Build timed out after 5 minutes')));
 });
+
+// ---- answering on the page ----
+function waitFor(pred, ms = 3000) {
+  return new Promise((resolve, reject) => {
+    const end = Date.now() + ms;
+    const tick = () => { const v = pred(); if (v) resolve(v); else if (Date.now() > end) reject(new Error('timed out')); else setTimeout(tick, 20); };
+    tick();
+  });
+}
+function openPage(url) {
+  // A page that stays connected, like a browser tab.
+  return new Promise((resolve) => { const req = http.get(`${url}events`, (res) => resolve({ close: () => req.destroy(), res })); });
+}
+const post = (url, body, origin) => new Promise((resolve, reject) => {
+  const u = new URL(url);
+  const req = http.request(u, { method: 'POST', headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) } }, (res) => { let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve({ status: res.statusCode, body: b })); });
+  req.on('error', reject); req.end(JSON.stringify(body));
+});
+const lastQuestion = (after) => live.liveEvents().filter((e) => e.type === 'question' && e.id > after).at(-1);
+
+test('page: the plan approval can be answered on the page; other sites cannot answer', async () => {
+  const { url } = await call('live_progress', {});
+  const origin = new URL(url).origin;
+  const page = await openPage(url);
+  try {
+    const mark = live.liveEvents().at(-1).id;
+    const pending = raw('approve_plan', { title: 'Page plan', operations: [{ tool: 'set_envs', target: 'build-app', summary: 'Set env vars' }] }, { cwd: work });
+    const q = await waitFor(() => lastQuestion(mark));
+    assert.equal(q.text, '۱ تغییر در حساب لیارای شما (حساب شخصی) می‌دهم، بدون هزینه‌ی تازه.', 'one Persian line on the page');
+    assert.ok(q.details.includes('Set env vars'));
+    assert.deepEqual(q.options.map((o) => o.id), ['allow', 'cancel']);
+    assert.equal((await post(`${url}answer`, { qid: q.qid, choice: 'allow' }, 'http://evil.example')).status, 403, 'cross-site POST refused');
+    assert.equal((await post(`${url}answer`, { qid: q.qid, choice: 'allow' })).status, 403, 'no Origin refused');
+    assert.equal((await post(`${url}answer`, { qid: q.qid, choice: 'hack' }, origin)).status, 409, 'unknown choice refused');
+    assert.equal((await post(`${url}answer`, { qid: q.qid, choice: 'allow' }, origin)).status, 200);
+    const r = await pending;
+    assert.equal(r.approved, true);
+    assert.equal(r.via, 'approved on the Liara page');
+    assert.equal((await post(`${url}answer`, { qid: q.qid, choice: 'allow' }, origin)).status, 409, 'answered once only');
+  } finally {
+    page.close();
+  }
+});
+
+test('page: ask offers upgrade or retry on the page; no page means ask in chat', async () => {
+  const { url } = await call('live_progress', {});
+  const origin = new URL(url).origin;
+  const opts = [{ id: 'upgrade', label: 'ارتقا به pro' }, { id: 'retry', label: 'دوباره امتحان کن' }];
+  const page = await openPage(url);
+  const mark = live.liveEvents().at(-1).id;
+  const pending = raw('ask', { question: 'زمان بیلد تمام شد. چه کنم؟', options: opts, app: 'build-app' }, { cwd: work });
+  const q = await waitFor(() => lastQuestion(mark));
+  assert.equal(q.app, 'build-app');
+  await post(`${url}answer`, { qid: q.qid, choice: 'retry' }, origin);
+  assert.deepEqual(await pending, { answer: 'retry', by: 'page', label: 'دوباره امتحان کن' });
+  page.close();
+  await waitFor(() => !live.liveConnected());
+  const r = await raw('ask', { question: 'x?', options: opts }, { cwd: work });
+  assert.equal(r.askInChat, true);
+});
+
+test('page: the deploy report downloads from the page', async () => {
+  const { url } = await call('live_progress', {});
+  const res = await get(`${url}report`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers['content-disposition'], /attachment; filename="liara-deploy-report-build-app\.html"/);
+  assert.match(res.body, /^<!DOCTYPE html>\n<html lang="fa" dir="rtl">/);
+});
