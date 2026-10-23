@@ -3,6 +3,7 @@
 A Claude Code plugin that deploys any project to [Liara](https://liara.ir) from Claude, plus a local reference for every Liara API it uses.
 
 - **[plugins/liara/](plugins/liara/README.md)**: the plugin. Say "deploy this to Liara" in any project.
+- **[docs/plugin/](docs/plugin/README.md)**: how the plugin works: architecture, security and consent, tests, privacy and support.
 - **[docs/api/](docs/api/README.md)**: endpoint reference, one file per product (212 endpoints), generated from Liara's OpenAPI specs.
 - **[docs/guides.md](docs/guides.md)**: concepts per product: states, record formats, plans, workflows.
 - **[specs/](specs/)**: the raw OpenAPI 3 files published at [developers.liara.ir](https://developers.liara.ir) (checked against the live site on 2026-10-22: identical).
