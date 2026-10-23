@@ -1,6 +1,7 @@
 // Packs a project folder into a .tar.gz for Liara's source upload.
 // Respects .gitignore (through git) and .liaraignore. Never includes real .env files.
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -93,19 +94,43 @@ export function listSourceFiles(root, { platform, includeEnvFiles = false } = {}
   return { files, usedGit: Boolean(fromGit), skippedEnv };
 }
 
+// opts.overrides: { "relative/path": text } put in the archive instead of (or besides) the
+// project's own files. The project folder itself is never changed (used for package mirrors).
 export function createArchive(root, opts = {}) {
-  const { files, usedGit, skippedEnv } = listSourceFiles(root, opts);
-  if (!files.length) throw new Error(`No files to deploy in ${root}`);
+  const { files: listed, usedGit, skippedEnv } = listSourceFiles(root, opts);
+  if (!listed.length) throw new Error(`No files to deploy in ${root}`);
+  const overrides = Object.entries(opts.overrides || {}).filter(([rel]) => rel && !path.isAbsolute(rel) && !rel.split(/[\\/]/).includes('..'));
+  const replaced = new Set(overrides.map(([rel]) => rel));
+  const files = listed.filter((f) => !replaced.has(f));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'liara-deploy-'));
   const list = path.join(dir, 'files.txt');
   const out = path.join(dir, 'source.tar.gz');
-  fs.writeFileSync(list, `${files.join('\0')}\0`);
-  execFileSync('tar', ['-czf', out, '-C', root, '--null', '-T', list], { stdio: 'pipe', maxBuffer: 64 * 1024 * 1024 });
+  if (!overrides.length) {
+    fs.writeFileSync(list, `${files.join('\0')}\0`);
+    execFileSync('tar', ['-czf', out, '-C', root, '--null', '-T', list], { stdio: 'pipe', maxBuffer: 64 * 1024 * 1024 });
+  } else {
+    const stage = path.join(dir, 'stage');
+    for (const [rel, text] of overrides) {
+      fs.mkdirSync(path.dirname(path.join(stage, rel)), { recursive: true });
+      fs.writeFileSync(path.join(stage, rel), text);
+    }
+    const plain = path.join(dir, 'source.tar');
+    if (files.length) {
+      fs.writeFileSync(list, `${files.join('\0')}\0`);
+      execFileSync('tar', ['-cf', plain, '-C', root, '--null', '-T', list], { stdio: 'pipe', maxBuffer: 64 * 1024 * 1024 });
+      execFileSync('tar', ['-rf', plain, '-C', stage, ...overrides.map(([rel]) => rel)], { stdio: 'pipe' });
+    } else {
+      execFileSync('tar', ['-cf', plain, '-C', stage, ...overrides.map(([rel]) => rel)], { stdio: 'pipe' });
+    }
+    fs.writeFileSync(out, zlib.gzipSync(fs.readFileSync(plain)));
+    fs.rmSync(plain, { force: true });
+  }
   const size = fs.statSync(out).size;
   return {
     file: out,
     size,
-    filesCount: files.length,
+    files: [...files, ...overrides.map(([rel]) => rel)],
+    filesCount: files.length + overrides.length,
     usedGit,
     skippedEnv,
     cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),

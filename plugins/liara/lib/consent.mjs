@@ -13,6 +13,7 @@
 //    to these exact arguments; Claude asks in chat and calls again with confirmToken.
 // Deletes always need the resource name typed (in the dialog, or as confirmName in chat).
 import crypto from 'node:crypto';
+import { askOnPage, closeQuestion, liveConnected } from './live.mjs';
 
 export const RISK_LABEL = {
   read: 'Read only',
@@ -104,6 +105,11 @@ export function consentText(c) {
   return lines.join('\n');
 }
 
+// The question on the Persian live page: c.fa when the tool wrote one, else a Persian line
+// about the kind of change plus the English title; the full text sits under "details".
+const RISK_FA = { change: 'این کار حساب لیارای شما را تغییر می‌دهد', billable: 'این کار منبعی پولی در حساب لیارای شما می‌سازد', destructive: 'این کار چیزی را حذف یا متوقف می‌کند' };
+export const pageText = (c) => c.fa || `${RISK_FA[c.risk] || 'تأیید شما لازم است'}: ${c.title}`;
+
 // Returns { ok: true, via } to go ahead, or { ok: false, result } to return instead.
 export async function requireConsent(ctx, tool, args, c) {
   if (!c || c.risk === 'read' || c.risk === 'session') return { ok: true, via: 'not needed' };
@@ -120,30 +126,47 @@ export async function requireConsent(ctx, tool, args, c) {
     return { ok: true, via: 'confirmed in chat' };
   }
 
+  // When the live page is open, the same question shows there with buttons; the first answer
+  // (page or dialog) wins. Deletes need a typed name, so they are never answered on the page.
+  const page = !c.typedConfirm && liveConnected()
+    ? askOnPage({ text: pageText(c), details: c.details?.length ? c.details : consentText(c).split('\n').filter(Boolean), app: c.app, options: [{ id: 'allow', label: 'تأیید و ادامه', primary: true }, { id: 'cancel', label: 'لغو' }] })
+    : null;
+  const fromPage = (choice) => (choice === 'allow'
+    ? { ok: true, via: 'approved on the Liara page' }
+    : { ok: false, result: { cancelled: true, message: 'The user did not approve this on the Liara page. Nothing was changed.' } });
+
   let notShown = null;
+  let pageAnswered = false;
   if (ctx?.elicit && dialogsShown) {
     const requestedSchema = c.typedConfirm
       ? { type: 'object', properties: { confirm: { type: 'string', title: `Type ${c.typedConfirm} to confirm` } }, required: ['confirm'] }
       : { type: 'object', properties: {} };
-    let res = null;
     const asked = Date.now();
-    try {
-      res = await ctx.elicit({ message: consentText(c), requestedSchema });
-    } catch (err) {
-      ctx.elicitError = err.message; // fall back to chat below
+    const dialog = ctx.elicit({ message: consentText(c), requestedSchema }).then((r) => ({ r, ms: Date.now() - asked }), (err) => ({ err, ms: Date.now() - asked }));
+    let first = page ? await Promise.race([dialog, page.answer.then((a) => ({ page: a }))]) : await dialog;
+    if (first.page !== undefined) {
+      if (first.page) return fromPage(first.page); // answered on the page; the dialog's later answer is ignored
+      pageAnswered = true; // the page timed out: wait for the dialog
+      first = await dialog;
     }
-    const ms = Date.now() - asked;
+    const { r: res, err, ms } = first;
+    if (err) ctx.elicitError = err.message; // fall back to the page or chat below
     if (res) {
       ctx.dialog = { action: res.action, ms };
       if (res.action === 'accept') {
-        if (!c.typedConfirm || String(res.content?.confirm || '').trim() === c.typedConfirm) return { ok: true, via: 'approved in dialog' };
+        if (!c.typedConfirm || String(res.content?.confirm || '').trim() === c.typedConfirm) {
+          if (page) closeQuestion(page.id, 'allow', 'claude');
+          return { ok: true, via: 'approved in dialog' };
+        }
+        if (page) closeQuestion(page.id, 'cancel', 'claude');
         return { ok: false, result: { cancelled: true, message: `The typed name did not match "${c.typedConfirm}". Nothing was changed.` } };
       }
       const tooFast = ms < minHumanMs();
       if (res.action === 'decline' && !tooFast) {
+        if (page) closeQuestion(page.id, 'cancel', 'claude');
         return { ok: false, result: { cancelled: true, message: 'The user did not approve this. Nothing was changed.' } };
       }
-      // Cancel, or a Decline no person could have given this fast: ask in chat instead.
+      // Cancel, or a Decline no person could have given this fast: ask on the page or in chat instead.
       if (tooFast) {
         dialogsShown = false;
         process.stderr.write(`[liara-mcp] the client answered a confirmation dialog with "${res.action}" in ${ms} ms, without showing it; asking in chat from now on\n`);
@@ -153,6 +176,10 @@ export async function requireConsent(ctx, tool, args, c) {
         ? 'This app could not show the Liara confirmation dialog (it answered by itself, without showing it to the user), so nothing was approved or declined yet.'
         : 'The confirmation dialog was closed without a choice, so nothing was approved or declined yet.';
     }
+  }
+  if (page && !pageAnswered) {
+    const a = await page.answer;
+    if (a) return fromPage(a);
   }
 
   return {
@@ -164,6 +191,7 @@ export async function requireConsent(ctx, tool, args, c) {
       confirmToken: issueToken(tool, args),
       consent: { ...c, riskLabel: RISK_LABEL[c.risk] },
       message: consentText(c),
+      ...(page ? { livePage: 'The question was also shown on the Liara live page; nobody answered there in time.' } : {}),
       howToConfirm: `Show this to the user and ask with AskUserQuestion (options: "Allow and continue", "Cancel", "Review details"). Only if they allow, call ${tool} again with the same arguments plus confirmToken${c.typedConfirm ? ` and confirmName (the user must type "${c.typedConfirm}" themselves)` : ''}. The token works once, for these exact arguments, for 30 minutes.`,
     },
   };

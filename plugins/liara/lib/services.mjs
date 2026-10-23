@@ -7,6 +7,7 @@ import { fillKeys, defaultKeys, databaseUrl, roleOf, SECRET_ROLES } from './envm
 import { getApp, checkBundle, resolveNetwork } from './deploy.mjs';
 import { S3_ENDPOINT } from './config.mjs';
 import { LiaraError } from './api.mjs';
+import { rememberSecrets } from './live.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -57,7 +58,7 @@ export async function setEnvs(api, { app, vars = {}, fromEnvFile, keys, path: ro
   for (const [k, v] of Object.entries(incoming)) {
     if (k === 'LIARA_API_TOKEN' || k === 'LIARA_TOKEN') { skipped.push(`${k} (never copied)`); continue; }
     if (current[k] !== undefined && !overwrite) { skipped.push(`${k} (exists)`); continue; }
-    if (current[k] !== v) { merged[k] = v; changed.push(k); }
+    if (current[k] !== v) { merged[k] = v; changed.push(k); rememberSecrets({ [k]: v }); }
   }
   if (changed.length) {
     await api.post('paas', '/v1/projects/update-envs', {
