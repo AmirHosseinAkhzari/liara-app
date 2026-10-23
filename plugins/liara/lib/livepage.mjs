@@ -38,6 +38,92 @@ const ICONS = {
   ext: '<path d="M14 4h6v6M20 4l-9 9M18 14v6H4V6h6"/>',
 };
 
+// What the page shows, worked out from the events in order. These two functions run in the
+// page (their source is put into the page script) and in the tests, so they use no outer names.
+// Every stage ends: health is done or failed once verify_app answers, failed when verify_app
+// errors, and failed with a reason when nothing comes in time (so no stage spins forever).
+export function liveModel(events) {
+  const LOC = { germany: 'آلمان', iran: 'ایران' };
+  const apps = new Map(); const general = []; const steps = new Map(); const questions = new Map();
+  const app = (name) => { if (!apps.has(name)) apps.set(name, { name, platform: null, items: [], attempts: [], checks: null, runtime: null, firstId: Infinity }); return apps.get(name); };
+  const attemptOf = (a, releaseID) => a.attempts.find((t) => t.releaseID === releaseID) || a.attempts[a.attempts.length - 1];
+  for (const ev of events) {
+    if (ev.type === 'question') questions.set(ev.qid, ev);
+    if (ev.type === 'answer') questions.delete(ev.qid);
+    if (ev.type === 'step') {
+      const prev = steps.get(ev.step);
+      const s = Object.assign({}, prev, ev, { started: prev ? prev.started : ev.time, firstId: prev ? prev.firstId : ev.id });
+      if (prev && prev.app && !ev.app) s.app = prev.app;
+      steps.set(ev.step, s);
+      if (!prev) { const holder = s.app ? app(s.app) : null; (holder ? holder.items : general).push({ kind: 'step', key: ev.step }); if (holder) holder.firstId = Math.min(holder.firstId, ev.id); }
+      else if (!prev.app && s.app) { const i = general.findIndex((x) => x.key === ev.step); if (i >= 0) general.splice(i, 1); app(s.app).items.push({ kind: 'step', key: ev.step }); }
+      if (s.app && s.tech && (s.tool === 'deploy' || s.tool === 'create_app')) app(s.app).platform = s.tech;
+    }
+    if (ev.type === 'deploy' && ev.app) {
+      const a = app(ev.app);
+      if (ev.platform) a.platform = ev.platform;
+      if (ev.phase === 'pack' || (ev.phase === 'build' && ev.image && (!a.attempts.length || a.attempts[a.attempts.length - 1].finished))) {
+        a.attempts.push({ startId: ev.id, upload: ev.image ? 'done' : 'active', build: 'pending', run: 'pending', logs: [], location: ev.image ? 'image' : null, state: null });
+      }
+      const t = attemptOf(a, ev.releaseID) || (a.attempts.push({ startId: ev.id, upload: 'pending', build: 'pending', run: 'pending', logs: [] }), a.attempts[a.attempts.length - 1]);
+      t.lastTime = ev.time;
+      if (ev.phase === 'uploaded') t.upload = 'done';
+      if (ev.phase === 'build') { if (t.releaseID && ev.releaseID && t.releaseID !== ev.releaseID) t.logs.push({ sys: 'بیلد دوباره' }); t.upload = 'done'; t.build = 'active'; t.releaseID = ev.releaseID; if (ev.location) t.location = ev.location; t.logs.push({ sys: ev.location ? 'بیلد در ' + (LOC[ev.location] || ev.location) : 'اجرای ایمیج داکر' }); }
+      if (ev.phase === 'state') t.state = ev.state;
+      if (ev.phase === 'finished') {
+        t.state = ev.state; t.url = ev.url;
+        // The deploy stopped waiting while Liara still builds: the build goes on (release_status follows it).
+        if (ev.finished === false) t.build = 'active';
+        else { t.finished = true; t.success = ev.success; t.build = ev.success ? 'done' : 'failed'; t.run = ev.success ? 'done' : 'failed'; t.endId = ev.id; t.endTime = ev.time; }
+      }
+    }
+    if (ev.type === 'log' && ev.app) { const a = app(ev.app); const t = attemptOf(a, ev.releaseID); if (t) { t.lastTime = ev.time; for (const l of ev.lines || []) t.logs.push({ text: l }); } }
+    if (ev.type === 'runtime' && ev.app) app(ev.app).runtime = { lines: ev.lines || [], time: ev.time, id: ev.id };
+    if (ev.type === 'location' && ev.app) { const a = app(ev.app); const t = a.attempts[a.attempts.length - 1]; if (t) t.fallback = ev; a.items.push({ kind: 'notice', ev }); }
+    if (ev.type === 'buildTimeout' && ev.app) app(ev.app).items.push({ kind: 'notice', ev });
+    if (ev.type === 'mirror' && ev.app) app(ev.app).items.push({ kind: 'notice', ev });
+    if (ev.type === 'diagnosis' && ev.app) app(ev.app).items.push({ kind: 'notice', ev });
+    if (ev.type === 'checks' && ev.app) { const a = app(ev.app); a.checks = ev; a.items.push({ kind: 'notice', ev }); }
+    if (ev.type === 'note') (ev.app ? app(ev.app).items : general).push({ kind: 'notice', ev });
+  }
+  return { apps: [...apps.values()].sort((a, b) => a.firstId - b.firstId), general, steps, questions: [...questions.values()] };
+}
+
+// Stages of the app's latest attempt, at time now (ms). Health counts only what happened after
+// that attempt began. why: the reason shown under a failed stage.
+export function liveStages(a, steps, now) {
+  const HEALTH_WAIT_MS = 5 * 60 * 1000; // a successful deploy, and no health check started since
+  const HEALTH_RUN_MS = 6 * 60 * 1000; // a health check still running (the plugin stops it at 3)
+  const BUILD_SILENT_MS = 30 * 60 * 1000; // a build with no news (the longest bundle builds 20)
+  const since = (iso) => (iso ? now - Date.parse(iso) : 0);
+  const st = { services: 'pending', upload: 'pending', build: 'pending', run: 'pending', health: 'pending' };
+  const why = {};
+  const own = a.items.filter((i) => i.kind === 'step').map((i) => steps.get(i.key));
+  const svc = own.filter((s) => s.tool !== 'deploy' && s.tool !== 'verify_app' && s.tool !== 'diagnose');
+  if (svc.length) st.services = svc.some((s) => s.status === 'running' || s.status === 'waiting') ? 'active' : svc.some((s) => s.status === 'failed' || s.status === 'error') ? 'failed' : 'done';
+  const t = a.attempts[a.attempts.length - 1];
+  if (t) {
+    if (st.services !== 'failed') st.services = 'done';
+    st.upload = t.upload; st.build = t.build; st.run = t.run;
+    if (st.build === 'active' && since(t.lastTime) > BUILD_SILENT_MS) { st.build = 'failed'; why.build = 'از بیلد بیش از ۳۰ دقیقه خبری نشد؛ وضعیت را در کنسول لیارا ببینید.'; }
+    const verify = own.filter((s) => s.tool === 'verify_app' && s.firstId > t.startId).pop();
+    const checks = a.checks && a.checks.id > t.startId ? a.checks : null;
+    if (verify && verify.status === 'running' && (!checks || verify.firstId > checks.id)) {
+      if (since(verify.started) > HEALTH_RUN_MS) { st.health = 'failed'; why.health = 'بررسی سلامت بیش از ۶ دقیقه جواب نداد.'; }
+      else st.health = 'active';
+    } else if (checks) {
+      st.health = checks.healthy ? 'done' : 'failed';
+      if (!checks.healthy) why.health = checks.error || (checks.checks || []).filter((c) => !c.ok).map((c) => c.name + (c.detail ? ': ' + c.detail : '')).join(' · ') || 'بعضی بررسی‌ها ناموفق بود.';
+    } else if (verify && (verify.status === 'error' || verify.status === 'failed')) {
+      st.health = 'failed'; why.health = verify.error || 'بررسی سلامت انجام نشد.';
+    } else if (t.success) {
+      if (since(t.endTime) > HEALTH_WAIT_MS) { st.health = 'failed'; why.health = 'بعد از استقرار، بررسی سلامت شروع نشد؛ برنامه هنوز بررسی نشده است.'; }
+      else st.health = 'active';
+    }
+  }
+  return { st, t, why };
+}
+
 let cached = null;
 export function livePageHtml() {
   if (cached) return cached;
@@ -160,6 +246,8 @@ main{padding:20px 0 4px}
 .term{background:var(--term);color:var(--term-ink);border-radius:12px;padding:10px 14px;margin:8px 0 0;max-height:280px;overflow:auto;font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;text-align:left}
 .term .ph{color:#8b949e;font-family:"Vazirmatn",system-ui,sans-serif;direction:rtl;display:block;text-align:right}
 .term .err{color:#ff7b72}
+.why:empty{display:none}.why{margin:-6px 0 12px}.why-line{display:flex;gap:6px;align-items:flex-start;margin:4px 0;padding:8px 12px;border-radius:10px;background:var(--fail-bg);color:var(--fail);font-size:.88rem}.why-line .ic{width:18px;height:18px;flex:none;margin-top:3px}
+.runtime{display:block;margin:4px 0 12px}
 .live{margin-top:14px;border:1px solid var(--line);border-radius:14px;overflow:hidden}
 .live-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;background:var(--ok-bg);color:var(--ok)}
 .live-bar strong{flex:none}
@@ -205,9 +293,9 @@ function iconFor(tool, tech) {
   else if ((tool === 'create_app' || tool === 'deploy') && PLATFORM[t]) return 't-' + PLATFORM[t];
   return 'i-' + (LINE[tool] || 'app');
 }
-const STATES = { QUEUED: 'در صف', PENDING: 'در صف', BUILDING: 'در حال بیلد', DEPLOYING: 'در حال اجرا', READY: 'آماده', SUCCEEDED: 'آماده', SUCCESS: 'آماده', RUNNING: 'آماده', FAILED: 'ناموفق', ERROR: 'ناموفق', CANCELED: 'لغو شد', CANCELLED: 'لغو شد', TIMEOUT: 'زمانش تمام شد', UNKNOWN: 'نامعلوم' };
+const STATES = { QUEUED: 'در صف', PENDING: 'در صف', BUILDING: 'در حال بیلد', DEPLOYING: 'در حال اجرا', READY: 'آماده', SUCCEEDED: 'آماده', SUCCESS: 'آماده', RUNNING: 'آماده', FAILED: 'ناموفق', ERROR: 'ناموفق', CANCELED: 'لغو شد', CANCELLED: 'لغو شد', TIMEOUT: 'زمانش تمام شد', TIMEDOUT: 'زمانش تمام شد', UNHEALTHY: 'سالم اجرا نشد', UNKNOWN: 'نامعلوم' };
 const LOC = { germany: 'آلمان', iran: 'ایران' };
-const CAUSES = { 'missing-dependency': 'وابستگی جاافتاده', 'missing-start-script': 'دستور اجرای برنامه تعریف نشده', 'runtime-version': 'نسخه‌ی محیط اجرا', 'build-failure': 'خطای بیلد', 'missing-env': 'متغیر محیطی جاافتاده', database: 'اتصال دیتابیس', port: 'پورت اشتباه', resources: 'کمبود منابع', 'third-party': 'سرویس بیرونی', 'liara-config': 'تنظیمات لیارا', 'code-error': 'خطای کد', 'platform-incident': 'اختلال در خود لیارا' };
+const CAUSES = { 'package-mirror': 'میرور پکیج‌ها در دسترس نبود', 'missing-dependency': 'وابستگی جاافتاده', 'missing-start-script': 'دستور اجرای برنامه تعریف نشده', 'runtime-version': 'نسخه‌ی محیط اجرا', 'build-failure': 'خطای بیلد', 'missing-env': 'متغیر محیطی جاافتاده', database: 'اتصال دیتابیس', port: 'پورت اشتباه', resources: 'کمبود منابع', 'third-party': 'سرویس بیرونی', 'liara-config': 'تنظیمات لیارا', 'code-error': 'خطای کد', 'platform-incident': 'اختلال در خود لیارا' };
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined && text !== null) e.textContent = text; return e; };
 const svg = (id, cls) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); if (cls) s.setAttribute('class', cls); const u = document.createElementNS('http://www.w3.org/2000/svg', 'use'); u.setAttribute('href', '#' + id); s.appendChild(u); return s; };
 const safeUrl = (u) => { try { const x = new URL(u); return x.protocol === 'https:' || x.protocol === 'http:' ? x.href : null; } catch { return null; } };
@@ -217,62 +305,10 @@ function onEvent(ev) { events.push(ev); schedule(); }
 let pending = false;
 function schedule() { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; render(); }); } }
 
-// Everything per app, rebuilt from the events in order.
-function model() {
-  const apps = new Map(); const general = []; const steps = new Map(); const questions = new Map();
-  const app = (name) => { if (!apps.has(name)) apps.set(name, { name, platform: null, items: [], attempts: [], checks: null, firstId: Infinity }); return apps.get(name); };
-  const attemptOf = (a, releaseID) => a.attempts.find((t) => t.releaseID === releaseID) || a.attempts[a.attempts.length - 1];
-  for (const ev of events) {
-    if (ev.type === 'question') questions.set(ev.qid, ev);
-    if (ev.type === 'answer') questions.delete(ev.qid);
-    if (ev.type === 'step') {
-      const prev = steps.get(ev.step);
-      const s = Object.assign({}, prev, ev, { started: prev ? prev.started : ev.time, firstId: prev ? prev.firstId : ev.id });
-      if (prev && prev.app && !ev.app) s.app = prev.app;
-      steps.set(ev.step, s);
-      if (!prev) { const holder = s.app ? app(s.app) : null; (holder ? holder.items : general).push({ kind: 'step', key: ev.step }); if (holder) holder.firstId = Math.min(holder.firstId, ev.id); }
-      else if (!prev.app && s.app) { const i = general.findIndex((x) => x.key === ev.step); if (i >= 0) general.splice(i, 1); app(s.app).items.push({ kind: 'step', key: ev.step }); }
-      if (s.app && s.tech && (s.tool === 'deploy' || s.tool === 'create_app')) app(s.app).platform = s.tech;
-    }
-    if (ev.type === 'deploy' && ev.app) {
-      const a = app(ev.app);
-      if (ev.platform) a.platform = ev.platform;
-      if (ev.phase === 'pack' || (ev.phase === 'build' && ev.image && (!a.attempts.length || a.attempts[a.attempts.length - 1].finished))) {
-        a.attempts.push({ startId: ev.id, upload: ev.image ? 'done' : 'active', build: 'pending', run: 'pending', logs: [], location: ev.image ? 'image' : null, state: null });
-      }
-      const t = attemptOf(a, ev.releaseID) || (a.attempts.push({ startId: ev.id, upload: 'pending', build: 'pending', run: 'pending', logs: [] }), a.attempts[a.attempts.length - 1]);
-      if (ev.phase === 'uploaded') t.upload = 'done';
-      if (ev.phase === 'build') { if (t.releaseID && ev.releaseID && t.releaseID !== ev.releaseID) t.logs.push({ sys: 'بیلد دوباره' }); t.upload = 'done'; t.build = 'active'; t.releaseID = ev.releaseID; if (ev.location) t.location = ev.location; t.logs.push({ sys: ev.location ? 'بیلد در ' + (LOC[ev.location] || ev.location) : 'اجرای ایمیج داکر' }); }
-      if (ev.phase === 'state') t.state = ev.state;
-      if (ev.phase === 'finished') { t.finished = true; t.success = ev.success; t.build = ev.success ? 'done' : 'failed'; t.run = ev.success ? 'done' : 'failed'; t.url = ev.url; t.state = ev.state; t.endId = ev.id; }
-    }
-    if (ev.type === 'log' && ev.app) { const a = app(ev.app); const t = attemptOf(a, ev.releaseID); if (t) for (const l of ev.lines || []) t.logs.push({ text: l }); }
-    if (ev.type === 'location' && ev.app) { const a = app(ev.app); const t = a.attempts[a.attempts.length - 1]; if (t) t.fallback = ev; a.items.push({ kind: 'notice', ev }); }
-    if (ev.type === 'buildTimeout' && ev.app) app(ev.app).items.push({ kind: 'notice', ev });
-    if (ev.type === 'diagnosis' && ev.app) app(ev.app).items.push({ kind: 'notice', ev });
-    if (ev.type === 'checks' && ev.app) { const a = app(ev.app); a.checks = ev; a.items.push({ kind: 'notice', ev }); }
-    if (ev.type === 'note') (ev.app ? app(ev.app).items : general).push({ kind: 'notice', ev });
-  }
-  return { apps: [...apps.values()].sort((a, b) => a.firstId - b.firstId), general, steps, questions: [...questions.values()] };
-}
-
-// Stages of the app's latest attempt. Health counts only checks made after that attempt began.
-function stages(a, steps) {
-  const st = { services: 'pending', upload: 'pending', build: 'pending', run: 'pending', health: 'pending' };
-  const own = a.items.filter((i) => i.kind === 'step').map((i) => steps.get(i.key));
-  const svc = own.filter((s) => s.tool !== 'deploy' && s.tool !== 'verify_app' && s.tool !== 'diagnose');
-  if (svc.length) st.services = svc.some((s) => s.status === 'running' || s.status === 'waiting') ? 'active' : svc.some((s) => s.status === 'failed' || s.status === 'error') ? 'failed' : 'done';
-  const t = a.attempts[a.attempts.length - 1];
-  if (t) {
-    if (st.services !== 'failed') st.services = 'done';
-    st.upload = t.upload; st.build = t.build; st.run = t.run;
-    const verify = own.filter((s) => s.tool === 'verify_app' && s.firstId > t.startId).pop();
-    if (verify && verify.status === 'running') st.health = 'active';
-    else if (a.checks && a.checks.id > t.startId) st.health = a.checks.healthy ? 'done' : 'failed';
-    else if (t.success) st.health = 'active';
-  }
-  return { st, t };
-}
+${liveModel.toString()}
+${liveStages.toString()}
+const model = () => liveModel(events);
+const stages = (a, steps) => liveStages(a, steps, Date.now());
 
 function stepRow(s, extra) {
   const cls = s.status === 'running' ? 's-running' : s.status === 'done' || s.status === 'reused' ? 's-done' : s.status === 'waiting' || s.status === 'declined' ? 's-warn' : 's-failed';
@@ -294,6 +330,7 @@ function noticeRow(ev) {
   let cls = 's-warn', ic = 'i-warn', title = '', sub = '';
   if (ev.type === 'note') { cls = 's-note'; ic = 'i-note'; title = ev.text; sub = 'پیام از Claude'; }
   if (ev.type === 'location') { ic = 'i-pin'; title = 'بیلد در آلمان در دسترس نبود؛ بیلد در ایران انجام می‌شود'; sub = ev.reason; }
+  if (ev.type === 'mirror') { ic = 'i-globe'; title = 'میرور پکیج‌ها: ' + (ev.used || []).map((u) => u.name + ' برای ' + u.ecosystem).join('، '); sub = /could not download/.test(ev.reason || '') ? 'میرور لیارا جواب نداد؛ بیلد با میرور پشتیبان از فهرست Mirava دوباره انجام می‌شود (فقط در نسخه‌ی آپلودشده، فایل‌های پروژه تغییر نمی‌کند).' : 'فقط در نسخه‌ی آپلودشده تنظیم شد؛ فایل‌های پروژه تغییر نمی‌کند.'; }
   if (ev.type === 'buildTimeout') { ic = 'i-clock'; title = 'زمان مجاز بیلد تمام شد'; sub = ev.upgrade && ev.upgrade.possible ? 'می‌شود بسته را به ' + ev.upgrade.bundlePlanID + ' ارتقا داد' + (ev.upgrade.buildMinutes ? ' (بیلد تا ' + fa(ev.upgrade.buildMinutes) + ' دقیقه)' : '') + ' یا دوباره امتحان کرد.' : (ev.upgrade && ev.upgrade.why) || ''; }
   if (ev.type === 'diagnosis') { ic = 'i-wrench'; title = 'علت خطا: ' + (CAUSES[ev.category] || ev.category); sub = [ev.explanation, ev.fix].filter(Boolean).join(' · '); }
   if (ev.type === 'checks') { cls = ev.healthy ? 's-done' : 's-failed'; ic = 'i-heart'; title = ev.healthy ? 'همه‌ی بررسی‌های سلامت درست بود' : 'بعضی بررسی‌های سلامت ناموفق بود'; sub = (ev.checks || []).filter((c) => !c.ok).map((c) => c.name + (c.detail ? ': ' + c.detail : '')).join(' · '); }
@@ -319,6 +356,24 @@ function buildPanel(a, t, idx) {
   const pre = el('pre', 'term'); pre.dir = 'ltr';
   if (!t.logs.some((l) => l.text)) pre.appendChild(el('span', 'ph', t.build === 'pending' ? 'لاگ بیلد بعد از آپلود اینجا می‌آید.' : 'منتظر لاگ بیلد…'));
   for (const l of t.logs.slice(-800)) pre.appendChild(l.sys ? el('span', 'ph', '— ' + l.sys + ' —') : el('span', /\b(error|err!|failed|fatal)\b/i.test(l.text) ? 'err' : '', l.text + '\n'));
+  d.appendChild(pre);
+  requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });
+  return d;
+}
+
+// The app's runtime logs (latest lines the plugin read; secrets masked by the plugin).
+function runtimePanel(a, failed) {
+  const key = a.name + '#runtime';
+  const d = el('details', 'build runtime');
+  d.open = openLogs.has(key) ? openLogs.get(key) : failed;
+  d.addEventListener('toggle', () => openLogs.set(key, d.open));
+  const sm = el('summary'); const chip = el('span', 'chip'); chip.appendChild(svg('i-cli', 'ic')); chip.append('لاگ اجرای برنامه'); sm.appendChild(chip);
+  sm.appendChild(el('span', 'chip', fa(a.runtime.lines.length) + ' خط · ' + clock(a.runtime.time)));
+  sm.appendChild(el('span', '', d.open ? 'بستن لاگ' : 'نمایش لاگ'));
+  d.appendChild(sm);
+  const pre = el('pre', 'term'); pre.dir = 'ltr';
+  if (!a.runtime.lines.length) pre.appendChild(el('span', 'ph', 'برنامه در این بازه لاگی ننوشته است.'));
+  for (const l of a.runtime.lines.slice(-400)) pre.appendChild(el('span', /\b(error|err!|failed|fatal|exception|traceback)\b/i.test(l) ? 'err' : '', l + '\n'));
   d.appendChild(pre);
   requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });
   return d;
@@ -362,13 +417,16 @@ function renderQuestions(qs) {
   if (!qs.length) document.title = document.title.replace(/^● /, '');
 }
 
+let renderedSig = '';
 function render() {
   const m = model();
   renderQuestions(m.questions);
   const appsBox = $('apps');
+  const sig = [];
   let stagesDone = 0, stagesAll = 0, anyRunning = false, anyFailed = false, allLive = m.apps.length > 0, anyFinished = false;
   for (const a of m.apps) {
-    const { st, t } = stages(a, m.steps);
+    const { st, t, why } = stages(a, m.steps);
+    sig.push(a.name + ':' + Object.values(st).join(','));
     stagesAll += 5; stagesDone += Object.values(st).filter((x) => x === 'done').length;
     const running = Object.values(st).includes('active') || a.items.some((i) => i.kind === 'step' && m.steps.get(i.key).status === 'running');
     const failed = !running && Object.values(st).includes('failed');
@@ -376,7 +434,7 @@ function render() {
     anyRunning ||= running; anyFailed ||= failed; allLive &&= Boolean(live); anyFinished ||= Boolean(t && t.finished);
     // Each app keeps its card; only its parts are redrawn, so the preview frame never reloads.
     let card = cards.get(a.name);
-    if (!card) { card = el('section', 'card app'); card.parts = { head: el('div', 'app-head'), stages: el('ol', 'stages'), tasks: el('ul', 'tasks'), live: el('div') }; card.append(card.parts.head, card.parts.stages, card.parts.tasks, card.parts.live); cards.set(a.name, card); appsBox.appendChild(card); }
+    if (!card) { card = el('section', 'card app'); card.parts = { head: el('div', 'app-head'), stages: el('ol', 'stages'), why: el('div', 'why'), tasks: el('ul', 'tasks'), runtime: el('div'), live: el('div') }; card.append(card.parts.head, card.parts.stages, card.parts.why, card.parts.tasks, card.parts.runtime, card.parts.live); cards.set(a.name, card); appsBox.appendChild(card); }
     const head = card.parts.head; head.replaceChildren();
     const tile = el('span', 'logo-tile'); tile.appendChild(svg(a.platform && PLATFORM[String(a.platform).toLowerCase()] ? 't-' + PLATFORM[String(a.platform).toLowerCase()] : 'i-app')); head.appendChild(tile);
     const nm = el('p', 'app-name'); const b = el('bdi', '', a.name); nm.appendChild(b); nm.appendChild(el('small', '', a.platform ? 'پلتفرم ' + a.platform : 'برنامه')); head.appendChild(nm);
@@ -385,8 +443,11 @@ function render() {
     const ol = card.parts.stages; ol.replaceChildren();
     [['services', 'سرویس‌ها', 'i-stack'], ['upload', 'آپلود کد', 'i-upload'], ['build', 'بیلد', 'i-hammer'], ['run', 'اجرا', a.platform && PLATFORM[String(a.platform).toLowerCase()] ? 't-' + PLATFORM[String(a.platform).toLowerCase()] : 'i-play'], ['health', 'بررسی سلامت', 'i-heart']].forEach(([k, label, ic]) => {
       const li = el('li', 'stage ' + st[k]); const dot = el('span', 'dot');
-      dot.appendChild(svg(st[k] === 'done' ? 'i-check' : st[k] === 'failed' ? 'i-x' : ic)); li.append(dot, el('span', '', label)); ol.appendChild(li);
+      dot.appendChild(svg(st[k] === 'done' ? 'i-check' : st[k] === 'failed' ? 'i-x' : ic)); li.append(dot, el('span', '', label)); if (why[k]) li.title = why[k]; ol.appendChild(li);
     });
+    const wb = card.parts.why; wb.replaceChildren();
+    for (const [k, label] of [['build', 'بیلد'], ['health', 'بررسی سلامت']]) if (st[k] === 'failed' && why[k]) { const p = el('p', 'why-line'); p.appendChild(svg('i-warn', 'ic')); p.appendChild(el('strong', '', label + ': ')); const w = el('span', '', why[k]); w.dir = 'auto'; p.appendChild(w); wb.appendChild(p); }
+    const rt = card.parts.runtime; rt.replaceChildren(); if (a.runtime) rt.appendChild(runtimePanel(a, st.health === 'failed'));
     const ul = card.parts.tasks; ul.replaceChildren(); let deployIdx = 0;
     const items = a.items.slice().sort((x, y) => (x.kind === 'step' ? m.steps.get(x.key).firstId : x.ev.id) - (y.kind === 'step' ? m.steps.get(y.key).firstId : y.ev.id));
     for (const it of items) {
@@ -417,6 +478,7 @@ function render() {
   else if (anyFailed) s = ['pill-fail', 'نیاز به رفع خطا', false];
   else if (m.general.length || m.apps.length) s = ['pill-info', 'در حال آماده‌سازی…', true];
   pill.className = 'pill ' + s[0] + (s[2] ? ' busy' : ''); pill.textContent = s[1];
+  renderedSig = sig.join('|');
   $('progress').style.width = (stagesAll ? Math.round((stagesDone / stagesAll) * 100) : 0) + '%';
   // Full event log
   const tl = $('timeline'); tl.replaceChildren();
@@ -425,6 +487,7 @@ function render() {
     if (ev.type === 'step') text = (NAMES[ev.tool] || ev.tool) + (ev.target ? ' · ' + ev.target : '') + ' · ' + ev.status;
     else if (ev.type === 'deploy') text = 'استقرار ' + (ev.app || '') + ' · ' + ev.phase + (ev.state ? ' · ' + ev.state : '') + (ev.location ? ' · ' + ev.location : '');
     else if (ev.type === 'log') continue;
+    else if (ev.type === 'runtime') text = 'لاگ اجرای ' + (ev.app || '') + ' · ' + fa((ev.lines || []).length) + ' خط';
     else if (ev.type === 'question') text = 'سؤال: ' + ev.text;
     else if (ev.type === 'answer') text = 'پاسخ: ' + (ev.choice || 'بی‌پاسخ') + (ev.by === 'page' ? ' (از همین صفحه)' : ev.by === 'claude' ? ' (در Claude)' : '');
     else text = ev.type + (ev.text ? ': ' + ev.text : '');
@@ -435,6 +498,7 @@ function render() {
 setInterval(() => {
   if (!events.length) return;
   const m = model();
+  if (m.apps.map((a) => a.name + ':' + Object.values(stages(a, m.steps).st).join(',')).join('|') !== renderedSig) schedule();
   const done = m.apps.length && m.apps.every((a) => { const { st, t } = stages(a, m.steps); return t && t.success && st.health === 'done'; }) && !m.questions.length;
   const end = done ? new Date(events[events.length - 1].time).getTime() : Date.now();
   $('elapsed').textContent = 'زمان سپری‌شده: ' + dur(end - new Date(events[0].time).getTime());

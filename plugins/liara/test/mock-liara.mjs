@@ -126,16 +126,19 @@ export function startMock() {
         const start = raw.indexOf(Buffer.from([0x1f, 0x8b]));
         const end = raw.indexOf(Buffer.from(`\r\n--${boundary}`), start);
         const tar = zlib.gunzipSync(raw.subarray(start, end));
-        const names = [];
+        const names = []; const contents = {};
         for (let off = 0; off + 512 <= tar.length;) {
           const name = tar.subarray(off, off + 100).toString().replace(/\0.*$/s, '');
           if (!name) break;
           const size = parseInt(tar.subarray(off + 124, off + 136).toString().replace(/\0.*$/s, '').trim() || '0', 8);
           names.push(name);
+          // Package manager settings, to see which mirror a build would use.
+          if (/(^|\/)(\.npmrc|\.yarnrc|composer\.json|requirements\.txt|nuget\.config|package\.json)$/.test(name)) contents[name.replace(/^\.\//, '')] = tar.subarray(off + 512, off + 512 + size).toString('utf8');
           off += 512 + Math.ceil(size / 512) * 512;
         }
-        state.uploads.push({ app: mm[1], names });
-        return send(200, { sourceID: id('src') });
+        const sourceID = id('src');
+        state.uploads.push({ app: mm[1], names, contents, sourceID });
+        return send(200, { sourceID });
       }
       if ((mm = p.match(/^\/v2\/projects\/([^/]+)\/releases$/)) && m === 'POST') {
         // Test switches: germanyDown refuses German builds; germanySilent fails them with no
@@ -144,6 +147,15 @@ export function startMock() {
         const rid = id('rel');
         let st = 'READY';
         if (state.germanySilent && body.build?.location === 'germany') { st = 'FAILED'; state.buildLogs = { ...state.buildLogs, [rid]: [] }; }
+        // mirrorDown: Liara's npm mirror does not answer; a build works only with another registry in .npmrc.
+        if (state.mirrorDown) {
+          const up = state.uploads.find((u) => u.sourceID === body.sourceID);
+          const registry = (up?.contents['.npmrc'] || '').match(/^registry=(.*)$/m)?.[1];
+          if (!registry || /package-mirror\.liara\.ir/.test(registry)) {
+            st = 'FAILED';
+            state.buildLogs = { ...state.buildLogs, [rid]: ['> npm ci', 'npm error code ETIMEDOUT', 'npm error network request to https://package-mirror.liara.ir/repository/npm/express failed, reason: connect ETIMEDOUT 185.208.180.10:443', 'npm error network This is a problem related to network connectivity.'] };
+          }
+        }
         if (state.buildTimeout === true || state.buildTimeout === mm[1]) { st = 'TIMEOUT'; state.buildTimeout = false; state.buildLogs = { ...state.buildLogs, [rid]: ['npm ci', 'Build timed out after 5 minutes'] }; }
         const rel = { _id: rid, state: st, port: body.port, type: body.type, body, createdAt: 'now', finishedAt: 'now' };
         // slowBuild: { ms, lines } — the build runs for ms, its log grows line by line (demos).
@@ -174,14 +186,13 @@ export function startMock() {
         const lines = state.logs?.[mm[1]] || ['listening on 3000'];
         return send(200, { data: [{ metaData: { releaseId: 'rel' }, values: lines.map((line, i) => [String(BigInt(Date.now() - 60_000 + i) * 1_000_000n), JSON.stringify({ type: 'stdout', _entry: line })]) }] });
       }
+      // Like the live API (and the Liara CLI's reader): { release, buildOutput: [{ line, stream, createdAt }] }.
       if ((mm = p.match(/^\/v2\/releases\/([^/]+)\/build-logs$/))) {
         const r = Object.values(state.releases).flat().find((x) => x._id === mm[1]);
-        if (r?.timedLog) {
-          const lines = r.timedLog.filter((x) => x.at <= Date.now()).map((x) => x.line);
-          return send(200, [...lines, ...(r.readyAt ? [] : state.buildLogs?.[mm[1]] || [])].map((line) => ({ line: `${line}\n` })));
-        }
+        const out = (lines) => send(200, { release: { state: r?.state || 'UNKNOWN' }, buildOutput: lines.map((line) => ({ _id: id('bo'), line: `${line}\n`, stream: 'STDOUT', releaseID: mm[1], createdAt: new Date().toISOString() })) });
+        if (r?.timedLog) return out([...r.timedLog.filter((x) => x.at <= Date.now()).map((x) => x.line), ...(r.readyAt ? [] : state.buildLogs?.[mm[1]] || [])]);
+        return state.buildLogs?.[mm[1]] ? out(state.buildLogs[mm[1]]) : send(404, {});
       }
-      if ((mm = p.match(/^\/v2\/releases\/([^/]+)\/build-logs$/))) return state.buildLogs?.[mm[1]] ? send(200, state.buildLogs[mm[1]].map((line) => ({ line: `${line}\n` }))) : send(404, {});
       if (m === 'POST' && p === '/v1/domains') {
         const d = { _id: id('d'), name: body.name, project: { project_id: body.project }, CNameRecord: `${body.project}.liara.run` };
         state.domains.push(d);

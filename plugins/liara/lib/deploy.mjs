@@ -3,14 +3,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createArchive } from './archive.mjs';
+import { mirrorsFor, pickBackup, ecosystemsOf, mirrorFailure, mirrorFiles, MIRAVA } from './mirrors.mjs';
 import { detectProject, normalizePlatform } from './detect.mjs';
 import { detectRuntime, VERSION_KEY } from './analyze.mjs';
 import { LiaraError } from './api.mjs';
-import { liveEvent, liveActive } from './live.mjs';
+import { liveEvent, liveActive, liveRuntimeLogs, rememberSecrets } from './live.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const DONE_OK = /^(READY|SUCCEEDED|SUCCESS|DEPLOYED|RUNNING)$/i;
-const DONE_FAIL = /^(FAILED|FAIL|ERROR|CANCELED|CANCELLED|TIMEOUT|REJECTED)$/i;
+// Liara's own release states include TIMEDOUT and UNHEALTHY (see the Liara CLI's build-logs).
+const DONE_FAIL = /^(FAILED|FAIL|ERROR|CANCELED|CANCELLED|TIMEOUT|TIMEDOUT|UNHEALTHY|REJECTED)$/i;
 
 // Where Liara builds the image (docs: paas/details/build-location). Germany downloads packages
 // without limits, so it is the default; Iran is the fallback when Germany is not available.
@@ -184,8 +186,13 @@ async function buildLogLines(api, releaseID) {
   // Not in the public spec; the Liara CLI uses it. Best effort.
   try {
     const data = await api.get('paas', `/v2/releases/${releaseID}/build-logs`, { query: { since: 0 }, timeoutMs: 15_000 });
-    const items = Array.isArray(data) ? data : data?.logs || data?.data || [];
-    const text = items.map((l) => (typeof l === 'string' ? l : l.line ?? l.message ?? JSON.stringify(l))).join('');
+    // Liara answers { release, buildOutput: [{ line, stream, createdAt }] } (like the Liara CLI
+    // reads it); each line keeps its own newline. Older shapes are still understood.
+    const items = Array.isArray(data) ? data : data?.buildOutput || data?.logs || data?.data || [];
+    const text = items.map((l) => {
+      const line = typeof l === 'string' ? l : String(l.line ?? l.message ?? '');
+      return /\n$/.test(line) ? line : `${line}\n`;
+    }).join('');
     return text ? text.replace(/\n$/, '').split('\n') : [];
   } catch {
     return null;
@@ -196,16 +203,43 @@ async function buildLogs(api, releaseID) {
   return lines === null ? null : lines.slice(-60).join('\n');
 }
 
+// How often a release's state is read while waiting (LIARA_POLL_SECONDS, default 3).
+const pollMs = () => {
+  const n = Number(process.env.LIARA_POLL_SECONDS ?? 3);
+  return (Number.isFinite(n) && n > 0 ? n : 3) * 1000;
+};
+// Build log lines already on the live page, per release, so no line is sent twice.
+const streamedLines = new Map();
+// The last release state shown on the live page, per release.
+const shownState = new Map();
+// Releases followed in the background (see followRelease).
+const following = new Map();
+const FOLLOW_MAX_SECONDS = 45 * 60;
+
+// The app's recent runtime logs on the live page, its secret env values masked. Best effort.
+export async function pushRuntimeLogs(api, app, { sinceSeconds, project } = {}) {
+  if (!liveActive()) return;
+  try {
+    const p = project || await getApp(api, app);
+    const list = await fetchLogs(api, app, sinceSeconds ?? Math.floor(Date.now() / 1000) - 15 * 60);
+    liveRuntimeLogs(app, list.filter((l) => l.message !== '').map((l) => `${l.time ? `${l.time.slice(11, 19)} ` : ''}${l.message}`), p?.envs || []);
+  } catch {
+    // the page simply keeps the previous lines
+  }
+}
+
 // live: also stream the release state and new build log lines to the live progress page.
 export async function releaseStatus(api, { app, releaseID, wait = 0, live = false }) {
   const deadline = Date.now() + wait * 1000;
-  let release; let current; let lastState = null; let sent = 0;
+  let release; let current;
+  const follow = live;
   const streamLogs = async (id) => {
-    if (!live || !id || !liveActive()) return;
+    if (!follow || !id || !liveActive()) return;
     const lines = await buildLogLines(api, id);
+    const sent = streamedLines.get(id) || 0;
     if (lines && lines.length > sent) {
       liveEvent({ type: 'log', app, releaseID: id, lines: lines.slice(sent).slice(-400) });
-      sent = lines.length;
+      streamedLines.set(id, lines.length);
     }
   };
   for (;;) {
@@ -213,13 +247,14 @@ export async function releaseStatus(api, { app, releaseID, wait = 0, live = fals
     current = data.currentRelease;
     release = releaseID ? data.releases?.find((r) => r._id === releaseID) : data.releases?.[0];
     const state = release?.state || 'UNKNOWN';
-    if (live && state !== lastState) {
-      liveEvent({ type: 'deploy', phase: 'state', app, releaseID: release?._id || releaseID, state });
-      lastState = state;
+    const rid = release?._id || releaseID;
+    if (follow && shownState.get(rid) !== state) {
+      liveEvent({ type: 'deploy', phase: 'state', app, releaseID: rid, state });
+      shownState.set(rid, state);
     }
     await streamLogs(release?._id || releaseID);
     if (DONE_OK.test(state) || DONE_FAIL.test(state) || Date.now() >= deadline) break;
-    await sleep(5000);
+    await sleep(Math.max(0, Math.min(pollMs(), deadline - Date.now())));
   }
   const state = release?.state || 'UNKNOWN';
   const failed = DONE_FAIL.test(state);
@@ -243,6 +278,31 @@ export async function releaseStatus(api, { app, releaseID, wait = 0, live = fals
   return out;
 }
 
+// The end of a deploy on the live page: the release result, then the app's first runtime logs.
+async function liveFinished(api, app, status, { location, startedAt, project } = {}) {
+  liveEvent({ type: 'deploy', phase: 'finished', app, releaseID: status.releaseID, success: status.success, finished: status.finished, state: status.state, url: status.url, ...(location ? { location } : {}) });
+  if (!status.finished) return; // still building: followRelease takes it from here
+  await pushRuntimeLogs(api, app, { sinceSeconds: startedAt, project });
+}
+
+// A release the deploy stopped waiting for while Liara still builds it (long builds, e.g.
+// Laravel with composer and npm): keep reading its state in the background until Liara says
+// it ended, and show the real result on the live page. The build result is the release state
+// only (READY = built and running, FAILED/TIMEDOUT/UNHEALTHY/... = failed), never a guess.
+// onEnd(status) runs once it ended (or after 45 minutes without an end).
+export function followRelease(api, app, releaseID, { onEnd } = {}) {
+  if (!releaseID || !liveActive()) return null;
+  if (following.has(releaseID)) return following.get(releaseID);
+  const run = (async () => {
+    const status = await releaseStatus(api, { app, releaseID, wait: FOLLOW_MAX_SECONDS, live: true });
+    if (status.finished) await liveFinished(api, app, status);
+    await onEnd?.(status);
+    return status;
+  })().catch(() => null).finally(() => following.delete(releaseID));
+  following.set(releaseID, run);
+  return run;
+}
+
 export async function deploy(api, args) {
   const root = path.resolve(args.path || process.cwd());
   let { app, port } = args;
@@ -257,7 +317,9 @@ export async function deploy(api, args) {
   if (!platform) throw new Error('Could not detect the platform. Pass platform (e.g. node, next, laravel, django, flask, python, go, dotnet, react, vue, angular, static, docker).');
 
   const steps = [];
+  const startedAt = Math.floor(Date.now() / 1000) - 60;
   let project = await getApp(api, app);
+  if (liveActive()) rememberSecrets(project?.envs || []);
   if (!project) {
     if (args.create === false) throw new Error(`App "${app}" not found on Liara and create=false.`);
     project = await createApp(api, { app, platform, planID: args.planID, bundlePlanID: args.bundlePlanID, network: args.network, createNetwork: args.createNetwork }, steps);
@@ -285,12 +347,40 @@ export async function deploy(api, args) {
     steps.push(`release ${rel?.releaseID} started from image ${image} (port ${port})`);
     liveEvent({ type: 'deploy', phase: 'build', app, releaseID: rel?.releaseID, image });
     const status = await releaseStatus(api, { app, releaseID: rel?.releaseID, wait: args.wait ?? 240, live: true });
-    liveEvent({ type: 'deploy', phase: 'finished', app, releaseID: status.releaseID, success: status.success, finished: status.finished, state: status.state, url: status.url });
+    await liveFinished(api, app, status, { startedAt });
     return { app, platform: platform || 'docker', port: Number(port), image, steps, ...status };
   }
 
   liveEvent({ type: 'deploy', phase: 'pack', app, platform });
-  const archive = createArchive(root, { platform, includeEnvFiles: Boolean(args.includeEnvFiles) });
+  const packOpts = { platform, includeEnvFiles: Boolean(args.includeEnvFiles) };
+  let archive = createArchive(root, packOpts);
+  const ecosystems = ecosystemsOf(archive.files || []);
+  const readFile = (rel) => { try { return fs.readFileSync(path.join(root, rel), 'utf8'); } catch { return null; } };
+  // Package mirrors (only in the uploaded copy): mirror = "auto" (default: Liara's, and a backup
+  // from the Mirava list if the build fails downloading packages), "off", or a provider id.
+  const mirrorMode = args.mirror || liaraJson.mirror || 'auto';
+  let mirrorUsed = null;
+  const withMirrors = (choices, reason) => {
+    const overrides = {}; const used = [];
+    for (const [eco, m] of choices) {
+      const f = mirrorFiles(eco, m, readFile);
+      if (!f) continue;
+      Object.assign(overrides, f.files);
+      used.push({ ecosystem: eco, mirror: m.id, name: m.name, url: m.url, applied: f.note });
+    }
+    if (!used.length) return false;
+    archive.cleanup();
+    archive = createArchive(root, { ...packOpts, overrides });
+    mirrorUsed = { reason, used, source: MIRAVA, note: 'Set only in the uploaded copy; the project files are unchanged.' };
+    steps.push(`package mirror: ${used.map((u) => `${u.name} for ${u.ecosystem}`).join(', ')} (${reason})`);
+    liveEvent({ type: 'mirror', app, reason, used: used.map((u) => ({ ecosystem: u.ecosystem, name: u.name, url: u.url })) });
+    return true;
+  };
+  if (!['auto', 'off', 'liara'].includes(mirrorMode)) {
+    const picks = ecosystems.map((eco) => [eco, mirrorsFor(eco).find((m) => m.id === mirrorMode)]).filter(([, m]) => m);
+    if (!picks.length) steps.push(`note: mirror "${mirrorMode}" has no ${ecosystems.join('/') || 'package'} mirror; using Liara's`);
+    else withMirrors(picks, `asked for ${mirrorMode}`);
+  }
   steps.push(`packed ${archive.filesCount} files (${(archive.size / 1024 / 1024).toFixed(1)} MB)${archive.usedGit ? ', respecting .gitignore' : ''}`);
   if (archive.skippedEnv.length) steps.push(`left out env files: ${archive.skippedEnv.join(', ')} (set their values as Liara env vars)`);
   if (archive.size > 250 * 1024 * 1024) steps.push('warning: archive is over 250 MB; add a .liaraignore for large assets');
@@ -376,9 +466,30 @@ export async function deploy(api, args) {
       liveEvent({ type: 'deploy', phase: 'build', app, releaseID, location });
       status = await releaseStatus(api, { app, releaseID, wait: args.wait ?? 240, live: true });
     }
-    liveEvent({ type: 'deploy', phase: 'finished', app, releaseID: status.releaseID, success: status.success, finished: status.finished, state: status.state, url: status.url, location });
+
+    // Packages could not be downloaded (Liara's mirror or the registry is down): build once
+    // more with the first backup mirror from the Mirava list that answers right now.
+    const failedEcos = !status.success && status.finished && mirrorMode === 'auto' && !mirrorUsed ? mirrorFailure(status.buildLogTail).filter((e) => !ecosystems.length || ecosystems.includes(e)) : [];
+    if (failedEcos.length) {
+      const picks = [];
+      for (const eco of failedEcos) {
+        const m = await pickBackup(eco).catch(() => null);
+        if (m) picks.push([eco, m]);
+      }
+      if (picks.length && withMirrors(picks, `the build could not download ${failedEcos.join('/')} packages`)) {
+        body.sourceID = await upload();
+        releaseID = await startRelease();
+        steps.push(`release ${releaseID} started with a backup package mirror (build location ${location})`);
+        liveEvent({ type: 'deploy', phase: 'build', app, releaseID, location });
+        status = await releaseStatus(api, { app, releaseID, wait: args.wait ?? 240, live: true });
+      } else {
+        steps.push(`the build could not download ${failedEcos.join('/')} packages and no backup mirror answered (checked the Mirava list)`);
+      }
+    }
+    await liveFinished(api, app, status, { location, startedAt, project });
     return {
       app, platform, port: Number(port),
+      ...(mirrorUsed ? { packageMirror: mirrorUsed } : {}),
       runtime: runtime ? { runtime: runtime.runtime, version: platformConfig[VERSION_KEY[platform]] || runtime.liaraDefault } : undefined,
       buildLocation: location, ...(fallback ? { buildLocationFallback: fallback } : {}),
       steps, ...status,

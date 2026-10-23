@@ -79,7 +79,7 @@ A deploy asks whether to use your personal account or a team (only teams where y
 
 ## MCP tools
 
-Read-only: `whoami`, `disks`, `teams`, `accounts`, `scan_project`, `list_resources`, `plans`, `estimate_cost`, `billing`, `get_envs`, `release_status`, `app_logs`, `verify_app`, `diagnose`, `service_status`, `docs_search`, `docs_read`, `vps_list`, `github_autodeploy` (inspect, status), `write_report` (writes a local file).
+Read-only: `whoami`, `disks`, `teams`, `accounts`, `scan_project`, `list_resources`, `plans`, `estimate_cost`, `billing`, `get_envs`, `release_status`, `mirrors`, `app_logs`, `verify_app`, `diagnose`, `service_status`, `docs_search`, `docs_read`, `vps_list`, `github_autodeploy` (inspect, status), `write_report` (writes a local file).
 Ask first: `approve_plan`, `create_app`, `change_app_plan`, `deploy`, `deploy_service`, `connect_disk`, `set_envs`, `app_action`, `connect_database`, `connect_storage`, `connect_mail`, `connect_dns`, `connect_ai`, `migrate_database`, `migrate_storage`, `create_vm`, `vm_action`, `delete_app`, `github_autodeploy` (setup), `logout`, `api` (anything but GET).
 `set_cron` writes liara.json only (the deploy applies it). `live_progress` opens the local live page; `ask` puts a choice in Claude and on that page. `login` opens the browser. Run any tool from a shell (no dialogs there; changes return `confirmationRequired`):
 

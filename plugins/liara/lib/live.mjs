@@ -20,8 +20,30 @@ let server = null;
 let base = null;
 let reportProvider = null;
 
+// Values of the app's secret env vars (passwords, keys, URLs with credentials). Logs can print
+// them in any shape, so besides scrubLine's patterns every known value is masked by itself.
+const secrets = new Set();
+const SECRET_KEY = /(PASSWORD|SECRET|TOKEN|_KEY|KEY_|PASS|PWD|DSN|CREDENTIALS?|AUTH|PRIVATE|SIGNATURE)/i;
+export function rememberSecrets(envs) {
+  const list = Array.isArray(envs) ? envs : Object.entries(envs || {}).map(([key, value]) => ({ key, value }));
+  for (const { key, value } of list) {
+    const v = String(value ?? '');
+    let url = null;
+    try { url = new URL(v); } catch { /* not a URL */ }
+    const parts = [];
+    if (url && (url.password || url.username)) parts.push(v, decodeURIComponent(url.password || ''), decodeURIComponent(url.username || ''));
+    else if (SECRET_KEY.test(String(key))) parts.push(v);
+    for (const p of parts) if (p.length >= 6) secrets.add(p);
+  }
+}
+function maskSecrets(text) {
+  let out = text;
+  for (const v of secrets) if (out.includes(v)) out = out.split(v).join('****');
+  return out;
+}
+
 function clean(x, depth = 0) {
-  if (typeof x === 'string') return scrubLine(x).slice(0, 2000);
+  if (typeof x === 'string') return scrubLine(maskSecrets(x)).slice(0, 2000);
   if (depth > 4) return undefined;
   if (Array.isArray(x)) return x.slice(-400).map((v) => clean(v, depth + 1));
   if (x && typeof x === 'object') return Object.fromEntries(Object.entries(x).filter(([, v]) => v !== undefined).map(([k, v]) => [k, clean(v, depth + 1)]));
@@ -38,6 +60,14 @@ export function liveEvent(e) {
   return ev.id;
 }
 export const liveEvents = () => events.slice();
+
+// The app's runtime logs on the page (the latest lines; each event replaces the last one).
+// envs: the app's env vars, so their secret values are masked even when printed raw.
+export function liveRuntimeLogs(app, lines, envs) {
+  if (!server || !app || !Array.isArray(lines)) return null;
+  if (envs) rememberSecrets(envs);
+  return liveEvent({ type: 'runtime', app, lines: lines.slice(-300).map((l) => String(l)) });
+}
 export const liveActive = () => Boolean(server);
 export const liveUrl = () => base;
 // Someone has the page open right now.

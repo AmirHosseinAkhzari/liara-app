@@ -7,6 +7,7 @@ import https from 'node:https';
 import { Resolver } from 'node:dns/promises';
 import { detectProject } from './detect.mjs';
 import { serviceStatus, platformSignal } from './status.mjs';
+import { mirrorFailure, MIRAVA } from './mirrors.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -139,7 +140,8 @@ async function appUrls(api, app, extra) {
   return [...new Set(urls)];
 }
 
-export async function verifyApp(api, { app, path: projectPath, paths, attempts = 4, logMinutes = 15, urls: extraUrls }) {
+// onLogs(lines, project): the runtime log lines that were read (for the live page).
+export async function verifyApp(api, { app, path: projectPath, paths, attempts = 4, logMinutes = 15, urls: extraUrls, onLogs }) {
   const checks = [];
   const notVerified = [];
   const add = (name, ok, detail, extra = {}) => checks.push({ name, ok, detail, ...extra });
@@ -170,6 +172,7 @@ export async function verifyApp(api, { app, path: projectPath, paths, attempts =
   }
 
   const lines = await recentLogLines(api, app, logMinutes);
+  onLogs?.(lines, project);
   const findings = classify(lines);
   add(`no errors in the last ${logMinutes} min of logs`, findings.length === 0, findings.length ? findings.map((f) => f.category).join(', ') : `${lines.length} log lines checked`);
 
@@ -193,12 +196,13 @@ export async function verifyApp(api, { app, path: projectPath, paths, attempts =
   };
 }
 
-export async function diagnose(api, { app, releaseID, path: projectPath, logMinutes = 60 }) {
+export async function diagnose(api, { app, releaseID, path: projectPath, logMinutes = 60, onLogs }) {
   const project = await getApp(api, app);
   if (!project) throw Object.assign(new Error(`App "${app}" not found`), { status: 404 });
   const rel = await releaseStatus(api, { app, releaseID, wait: 0 });
   const buildLines = String(rel.buildLogTail || '').split('\n').filter(Boolean);
   const runtimeLines = await recentLogLines(api, app, logMinutes);
+  onLogs?.(runtimeLines, project);
   const findings = [
     ...classify(buildLines).map((f) => ({ ...f, from: 'build log' })),
     ...classify(runtimeLines).map((f) => ({ ...f, from: 'runtime log' })),
@@ -219,12 +223,15 @@ export async function diagnose(api, { app, releaseID, path: projectPath, logMinu
     if (missing.length) config.push({ category: 'missing-env', explanation: `Service settings the code reads are not set on Liara: ${missing.join(', ')}.`, suggestedFix: 'Connect the service (connect_*) or copy the values with set_envs.', evidence: missing });
   }
 
+  const mirrorEcos = mirrorFailure(buildLines.join('\n'));
+  if (mirrorEcos.length) config.push({ category: 'package-mirror', explanation: `The build could not download ${mirrorEcos.join('/')} packages: Liara's package mirror or the registry did not answer. The code is not the problem.`, suggestedFix: `Check the mirrors tool, then deploy again with mirror: "<a working backup>" (from the Mirava list, ${MIRAVA}). deploy does this once by itself when mirror is "auto".`, evidence: buildLines.filter((l) => /ETIMEDOUT|ECONNRESET|EAI_AGAIN|timed? ?out|curl error|Could not fetch URL|NU1301|50[234]|package-mirror/i.test(l)).slice(-5).map(scrubLine) });
+
   const status = await serviceStatus().catch(() => null);
   const platform = platformSignal(status, ['PaaS', 'DBaaS', 'API']);
   const all = [...findings, ...config];
   if (platform.likely) all.push({ category: 'platform-incident', explanation: platform.note, suggestedFix: 'Wait for Liara to resolve it (see the status page) before changing code.', evidence: [...platform.notOperational.map((n) => `${n} not operational`), ...platform.incidents] });
 
-  const ORDER = ['platform-incident', 'missing-start-script', 'missing-dependency', 'runtime-version', 'build-failure', 'missing-env', 'database', 'port', 'resources', 'third-party', 'liara-config', 'code-error'];
+  const ORDER = ['platform-incident', 'package-mirror', 'missing-start-script', 'missing-dependency', 'runtime-version', 'build-failure', 'missing-env', 'database', 'port', 'resources', 'third-party', 'liara-config', 'code-error'];
   all.sort((a, b) => ORDER.indexOf(a.category) - ORDER.indexOf(b.category));
   const top = all[0] || null;
   return {
