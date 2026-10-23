@@ -22,6 +22,7 @@ Same ground rules as the liara-deploy skill: consent dialogs (or `confirmationRe
 ## Billing
 
 - `billing`: balance (personal, or the chosen team's), low-credit settings, every resource with its plan price, estimated monthly total, how long the balance lasts, and resources worth checking (stopped, never deployed).
+- `lowBalance: true` (under the account's alert amount, or lasting fewer than `LIARA_LOW_BALANCE_DAYS` days, default 10): say how long it lasts and ask with buttons (AskUserQuestion) how long the services should keep running: **10 days**, **30 days**, or **Other** (a number of days). Answer with the matching `topUp.quotes` entry, or `billing {days}` for Other: the cost for that period, the credit to add in Toman and in Rial (the console's field takes Rial), and how to pay (`topUp.howToPay`, `topUp.docs`). The user can also ask for a quote any time with `billing {days}`.
 - Invoices, actual charges and payments have no API: link the console (and https://docs.liara.ir/references/console/cost-estimation/). Never pay, buy, upgrade or delete anything without the user asking and the consent dialog.
 - To remove an unneeded resource: `delete_app` / `vm_action {action: "delete"}` (the user types the name), only after the user decides.
 
@@ -38,7 +39,7 @@ Same ground rules as the liara-deploy skill: consent dialogs (or `confirmationRe
 
 ## Troubleshooting a running app
 
-`verify_app {app, path}` → `diagnose {app, path}` → explain the evidence → minimal fix → redeploy → `verify_app`. Don't retry without new evidence.
+`verify_app {app, path}` → `diagnose {app, path}` → explain the evidence → minimal fix (made by you, not asked of the user, unless it needs money, a secret, deleting data or a product decision) → `live_progress {note}` → redeploy → `verify_app`. Don't retry without new evidence. A build that ran out of time (`buildTimedOut`) gets more time with `change_app_plan` and the bundle in `upgradeForBuildTime`.
 
 ## Automatic deploys from GitHub
 
@@ -50,4 +51,4 @@ Same ground rules as the liara-deploy skill: consent dialogs (or `confirmationRe
 
 ## Reports
 
-After a deployment, VPS creation, troubleshooting or configuration change: `write_report {path, lang, operation, request, summary, issues, remaining, docs}`. Facts come from the recorded actions; you only add the narrative. Attach the file with SendUserFile and say where it is saved.
+After a deployment, VPS creation, troubleshooting or configuration change: `write_report {path, lang, operation, request, summary, issues, remaining, docs}`. Facts come from the recorded actions; you only add the narrative. A deployment (`operation: "deployment"`) always gets the Persian deployment page (cards and charts only: plans bought, cost chart, balance and days left with a top-up button when low, service map), which shows no narrative. Attach the file with SendUserFile and say where it is saved.

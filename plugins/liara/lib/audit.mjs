@@ -30,16 +30,24 @@ function pick(result) {
   if (result.database) out.database = { hostname: result.database.hostname, type: result.database.type };
   if (result.bucket?.name) out.bucket = result.bucket.name;
   if (result.envVars) out.envVarNames = Object.keys(result.envVars);
+  // deploy_service: which app got the connection env vars (names only).
+  if (result.service && result.image) out.image = result.image;
+  if (result.connection?.app) {
+    out.connectedTo = result.connection.app;
+    if (Array.isArray(result.connection.envVars)) out.envVarNames = result.connection.envVars;
+  }
   return out;
 }
 
-export function record({ tool, risk, account, target, consent, dialog, outcome, result, error, started, plan, bundle, kind }) {
+// forApp: the app a service was connected to (args.app / args.connectTo), for the report's map.
+export function record({ tool, risk, account, target, forApp, consent, dialog, outcome, result, error, started, plan, bundle, kind }) {
   const entry = {
     time: new Date().toISOString(),
     tool,
     risk,
     account,
     target: target || null,
+    ...(forApp ? { forApp } : {}),
     consent: consent || null,
     ...(dialog ? { dialog } : {}), // the dialog's raw answer and how fast it came
     ...(plan ? { plan, bundle: bundle || undefined, kind: kind || undefined } : {}),

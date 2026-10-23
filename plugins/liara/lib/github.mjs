@@ -62,7 +62,8 @@ jobs:
           LIARA_TOKEN: \${{ secrets.LIARA_API_TOKEN }}
         run: |
           npm i -g @liara/cli@9
-          liara deploy ${flags.join(' ')}
+          # Builds in Germany (packages download without limits); if that fails, tries once in Iran.
+          liara deploy ${flags.join(' ')} --build-location="germany" || liara deploy ${flags.join(' ')} --build-location="iran"
 `;
 }
 

@@ -162,4 +162,19 @@ export async function estimate(api, items) {
   };
 }
 
+// What a plan gives (CPU cores, RAM GB, disk GB, storage GB, mail accounts), from the live
+// lists, for showing a plan to the user. Unknown fields are left out.
+export async function planSpecs(api, { kind, plan }) {
+  let p;
+  if (kind === 'vps') p = (await vpsCatalog(api)).plans?.[plan];
+  else {
+    const group = { app: 'projects', database: 'databases', bucket: 'objectStorage', mail: 'mail' }[kind];
+    p = group ? (await meCatalog(api)).plans?.[group]?.[plan] : null;
+  }
+  if (!p || typeof p !== 'object') return {};
+  const n = (x) => (typeof x === 'number' ? x : typeof x?.amount === 'number' ? x.amount : undefined);
+  const out = { cpu: n(p.CPU), ramGB: n(p.RAM), diskGB: n(p.volume), spaceGB: n(p.space), mailAccounts: n(p.maxAccount) };
+  return Object.fromEntries(Object.entries(out).filter(([, x]) => x !== undefined));
+}
+
 export const formatToman = (n) => (typeof n === 'number' ? `${Math.round(n).toLocaleString('en-US')} Toman` : 'unknown');

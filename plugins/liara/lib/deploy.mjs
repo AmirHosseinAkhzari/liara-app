@@ -6,10 +6,19 @@ import { createArchive } from './archive.mjs';
 import { detectProject, normalizePlatform } from './detect.mjs';
 import { detectRuntime, VERSION_KEY } from './analyze.mjs';
 import { LiaraError } from './api.mjs';
+import { liveEvent, liveActive } from './live.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const DONE_OK = /^(READY|SUCCEEDED|SUCCESS|DEPLOYED|RUNNING)$/i;
 const DONE_FAIL = /^(FAILED|FAIL|ERROR|CANCELED|CANCELLED|TIMEOUT|REJECTED)$/i;
+
+// Where Liara builds the image (docs: paas/details/build-location). Germany downloads packages
+// without limits, so it is the default; Iran is the fallback when Germany is not available.
+export const BUILD_LOCATIONS = ['germany', 'iran'];
+// The release was refused for a reason that is not about our input.
+const locationRefused = (err) => (err?.status >= 500) || /location|germany|builder|not available|unavailable|capacity|maintenance/i.test(err?.message || '');
+// The build failed before it ran: an empty build log, or one that blames the builder.
+const buildNeverRan = (status) => status.buildLogTail === '' || /build location|germany|no (available )?builders?|builders? (is |are )?(not available|unavailable|offline|busy)|capacity/i.test(status.buildLogTail || '');
 
 // LIARA_APP_URL_TEMPLATE exists for tests only (points apps at a local server).
 export function appUrl(app) {
@@ -171,25 +180,44 @@ export async function createApp(api, { app, platform, planID, bundlePlanID, netw
   return getApp(api, app);
 }
 
-async function buildLogs(api, releaseID) {
+async function buildLogLines(api, releaseID) {
   // Not in the public spec; the Liara CLI uses it. Best effort.
   try {
     const data = await api.get('paas', `/v2/releases/${releaseID}/build-logs`, { query: { since: 0 }, timeoutMs: 15_000 });
     const items = Array.isArray(data) ? data : data?.logs || data?.data || [];
-    return items.map((l) => (typeof l === 'string' ? l : l.line ?? l.message ?? JSON.stringify(l))).join('').split('\n').slice(-60).join('\n');
+    const text = items.map((l) => (typeof l === 'string' ? l : l.line ?? l.message ?? JSON.stringify(l))).join('');
+    return text ? text.replace(/\n$/, '').split('\n') : [];
   } catch {
     return null;
   }
 }
+async function buildLogs(api, releaseID) {
+  const lines = await buildLogLines(api, releaseID);
+  return lines === null ? null : lines.slice(-60).join('\n');
+}
 
-export async function releaseStatus(api, { app, releaseID, wait = 0 }) {
+// live: also stream the release state and new build log lines to the live progress page.
+export async function releaseStatus(api, { app, releaseID, wait = 0, live = false }) {
   const deadline = Date.now() + wait * 1000;
-  let release; let current;
+  let release; let current; let lastState = null; let sent = 0;
+  const streamLogs = async (id) => {
+    if (!live || !id || !liveActive()) return;
+    const lines = await buildLogLines(api, id);
+    if (lines && lines.length > sent) {
+      liveEvent({ type: 'log', app, releaseID: id, lines: lines.slice(sent).slice(-400) });
+      sent = lines.length;
+    }
+  };
   for (;;) {
     const data = await api.get('paas', `/v1/projects/${encodeURIComponent(app)}/releases`, { query: { page: 1, count: 10 } });
     current = data.currentRelease;
     release = releaseID ? data.releases?.find((r) => r._id === releaseID) : data.releases?.[0];
     const state = release?.state || 'UNKNOWN';
+    if (live && state !== lastState) {
+      liveEvent({ type: 'deploy', phase: 'state', app, releaseID: release?._id || releaseID, state });
+      lastState = state;
+    }
+    await streamLogs(release?._id || releaseID);
     if (DONE_OK.test(state) || DONE_FAIL.test(state) || Date.now() >= deadline) break;
     await sleep(5000);
   }
@@ -255,17 +283,20 @@ export async function deploy(api, args) {
     if (args.message) body.message = args.message;
     const rel = await api.post('paas', `/v2/projects/${encodeURIComponent(app)}/releases`, body);
     steps.push(`release ${rel?.releaseID} started from image ${image} (port ${port})`);
-    const status = await releaseStatus(api, { app, releaseID: rel?.releaseID, wait: args.wait ?? 240 });
+    liveEvent({ type: 'deploy', phase: 'build', app, releaseID: rel?.releaseID, image });
+    const status = await releaseStatus(api, { app, releaseID: rel?.releaseID, wait: args.wait ?? 240, live: true });
+    liveEvent({ type: 'deploy', phase: 'finished', app, releaseID: status.releaseID, success: status.success, finished: status.finished, state: status.state, url: status.url });
     return { app, platform: platform || 'docker', port: Number(port), image, steps, ...status };
   }
 
+  liveEvent({ type: 'deploy', phase: 'pack', app, platform });
   const archive = createArchive(root, { platform, includeEnvFiles: Boolean(args.includeEnvFiles) });
   steps.push(`packed ${archive.filesCount} files (${(archive.size / 1024 / 1024).toFixed(1)} MB)${archive.usedGit ? ', respecting .gitignore' : ''}`);
   if (archive.skippedEnv.length) steps.push(`left out env files: ${archive.skippedEnv.join(', ')} (set their values as Liara env vars)`);
   if (archive.size > 250 * 1024 * 1024) steps.push('warning: archive is over 250 MB; add a .liaraignore for large assets');
 
-  let sourceID;
-  try {
+  const upload = async () => {
+    liveEvent({ type: 'deploy', phase: 'upload', app, files: archive.filesCount, sizeMB: Math.round((archive.size / 1024 / 1024) * 10) / 10 });
     // Liara checks the part's type ("Invalid file type. Allowed types: gzip, zip"); the CLI's
     // form-data sends application/gzip for .tar.gz. Without it the upload is refused (seen live).
     const type = 'application/gzip';
@@ -273,39 +304,88 @@ export async function deploy(api, args) {
     const form = new FormData();
     form.append('file', blob, 'source.tar.gz');
     const up = await api.request('paas', 'POST', `/v2/projects/${encodeURIComponent(app)}/sources`, { form, timeoutMs: 15 * 60_000 });
-    sourceID = up?.sourceID;
+    if (!up?.sourceID) throw new Error('Upload succeeded but Liara returned no sourceID.');
+    liveEvent({ type: 'deploy', phase: 'uploaded', app });
+    return up.sourceID;
+  };
+
+  // The archive stays until the build is done: a fallback build in Iran may need it again.
+  try {
+    const sourceID = await upload();
+    steps.push('uploaded source');
+
+    const body = { sourceID, port: Number(port), type: platform };
+    if (args.message) body.message = args.message;
+    const gi = gitInfo(root);
+    if (gi) body.gitInfo = gi;
+    for (const k of ['cron', 'args', 'disks', 'healthCheck']) if (liaraJson[k] !== undefined) body[k] = liaraJson[k];
+    // Runtime version: liara.json wins; otherwise the version the project pins, if Liara supports it (like `liara deploy`).
+    const platformConfig = liaraJson[platform] && typeof liaraJson[platform] === 'object' ? { ...liaraJson[platform] } : {};
+    const runtime = detectRuntime(root, platform);
+    if (runtime) {
+      const key = VERSION_KEY[platform];
+      if (platformConfig[key]) steps.push(`runtime: ${runtime.runtime} ${platformConfig[key]} (liara.json)`);
+      else if (runtime.version && runtime.status === 'supported') {
+        platformConfig[key] = runtime.version;
+        steps.push(`runtime: ${runtime.runtime} ${runtime.version} (from ${runtime.source})`);
+      } else if (runtime.version) {
+        steps.push(`warning: ${runtime.runtime} ${runtime.version} (${runtime.source}) is not supported by Liara; using Liara's default ${runtime.liaraDefault}`);
+      } else steps.push(`runtime: ${runtime.runtime} not pinned, Liara uses its default ${runtime.liaraDefault}`);
+    }
+    if (Object.keys(platformConfig).length) body.platformConfig = platformConfig;
+
+    // Build location: args, then liara.json "build.location", then Germany.
+    const pinned = args.buildLocation || liaraJson.build?.location;
+    if (pinned && !BUILD_LOCATIONS.includes(pinned)) throw new Error(`Unknown build location "${pinned}". Use germany or iran.`);
+    let location = pinned || 'germany';
+    const liaraBuild = liaraJson.build && typeof liaraJson.build === 'object' ? liaraJson.build : {};
+    let fallback = null;
+    const startRelease = async () => {
+      body.build = { ...liaraBuild, location };
+      const rel = await api.post('paas', `/v2/projects/${encodeURIComponent(app)}/releases`, body);
+      return rel?.releaseID;
+    };
+    const toIran = (reason) => {
+      fallback = reason;
+      steps.push(`germany build not available (${reason}); building in iran instead`);
+      liveEvent({ type: 'location', app, from: 'germany', to: 'iran', reason });
+      location = 'iran';
+    };
+
+    let releaseID;
+    try {
+      releaseID = await startRelease();
+    } catch (err) {
+      if (location !== 'germany' || !locationRefused(err)) throw err;
+      toIran(`release refused: ${err.message}`);
+      releaseID = await startRelease();
+    }
+    steps.push(`release ${releaseID} started (type ${platform}, port ${port}, build location ${location})`);
+    liveEvent({ type: 'deploy', phase: 'build', app, releaseID, location });
+    let status = await releaseStatus(api, { app, releaseID, wait: args.wait ?? 240, live: true });
+
+    if (!status.success && status.finished && location === 'germany' && buildNeverRan(status)) {
+      toIran(status.buildLogTail ? 'the Germany builder failed before building' : 'the Germany build ended without any build output');
+      try {
+        releaseID = await startRelease();
+      } catch {
+        body.sourceID = await upload(); // the first upload may be tied to the failed release
+        releaseID = await startRelease();
+      }
+      steps.push(`release ${releaseID} started (build location iran)`);
+      liveEvent({ type: 'deploy', phase: 'build', app, releaseID, location });
+      status = await releaseStatus(api, { app, releaseID, wait: args.wait ?? 240, live: true });
+    }
+    liveEvent({ type: 'deploy', phase: 'finished', app, releaseID: status.releaseID, success: status.success, finished: status.finished, state: status.state, url: status.url, location });
+    return {
+      app, platform, port: Number(port),
+      runtime: runtime ? { runtime: runtime.runtime, version: platformConfig[VERSION_KEY[platform]] || runtime.liaraDefault } : undefined,
+      buildLocation: location, ...(fallback ? { buildLocationFallback: fallback } : {}),
+      steps, ...status,
+    };
   } finally {
     archive.cleanup();
   }
-  if (!sourceID) throw new Error('Upload succeeded but Liara returned no sourceID.');
-  steps.push('uploaded source');
-
-  const body = { sourceID, port: Number(port), type: platform };
-  if (args.message) body.message = args.message;
-  const gi = gitInfo(root);
-  if (gi) body.gitInfo = gi;
-  for (const k of ['build', 'cron', 'args', 'disks', 'healthCheck']) if (liaraJson[k] !== undefined) body[k] = liaraJson[k];
-  // Runtime version: liara.json wins; otherwise the version the project pins, if Liara supports it (like `liara deploy`).
-  const platformConfig = liaraJson[platform] && typeof liaraJson[platform] === 'object' ? { ...liaraJson[platform] } : {};
-  const runtime = detectRuntime(root, platform);
-  if (runtime) {
-    const key = VERSION_KEY[platform];
-    if (platformConfig[key]) steps.push(`runtime: ${runtime.runtime} ${platformConfig[key]} (liara.json)`);
-    else if (runtime.version && runtime.status === 'supported') {
-      platformConfig[key] = runtime.version;
-      steps.push(`runtime: ${runtime.runtime} ${runtime.version} (from ${runtime.source})`);
-    } else if (runtime.version) {
-      steps.push(`warning: ${runtime.runtime} ${runtime.version} (${runtime.source}) is not supported by Liara; using Liara's default ${runtime.liaraDefault}`);
-    } else steps.push(`runtime: ${runtime.runtime} not pinned, Liara uses its default ${runtime.liaraDefault}`);
-  }
-  if (Object.keys(platformConfig).length) body.platformConfig = platformConfig;
-
-  const rel = await api.post('paas', `/v2/projects/${encodeURIComponent(app)}/releases`, body);
-  const releaseID = rel?.releaseID;
-  steps.push(`release ${releaseID} started (type ${platform}, port ${port})`);
-
-  const status = await releaseStatus(api, { app, releaseID, wait: args.wait ?? 240 });
-  return { app, platform, port: Number(port), runtime: runtime ? { runtime: runtime.runtime, version: platformConfig[VERSION_KEY[platform]] || runtime.liaraDefault } : undefined, steps, ...status };
 }
 
 // Runtime logs as [{time, type, message}]. Uses /v2/projects/{app}/logs like the current Liara CLI
