@@ -77,8 +77,11 @@ test('one approved plan covers its steps and nothing else', async () => {
   }, { elicit: u.elicit });
   assert.equal(plan.approved, true);
   assert.equal(plan.totalMonthlyToman, 720000 + 275000);
-  assert.match(u.seen[0].message, /Cost: 995,000 Toman\/month in total/);
-  assert.match(u.seen[0].message, /• Create the app — 995,000 Toman\/month/);
+  // One short line: how many services, what they cost a day. The step list stays in the result.
+  assert.equal(u.seen[0].message.split('\n')[0], "I'll add 2 services to your Liara account (personal account): about 33,167 Toman a day, plus items whose price is unknown.");
+  assert.equal(plan.question, u.seen[0].message.split('\n')[0]);
+  assert.equal(plan.totalDailyToman, 33167);
+  assert.deepEqual(plan.operations.map((o) => o.summary), ['Create the app', 'Create Postgres', 'Set env vars']);
 
   const quiet = user('decline'); // would refuse if asked
   assert.equal((await callTool('create_app', { app: 'planned', platform: 'node', planID: 'medium-g2', bundlePlanID: 'basic' }, { elicit: quiet.elicit })).created, true);

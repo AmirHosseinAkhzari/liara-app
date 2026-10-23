@@ -77,7 +77,7 @@ export function useAccount(name) {
   return { current: name };
 }
 
-function openBrowser(url) {
+export function openBrowser(url) {
   const [cmd, args] = process.platform === 'darwin' ? ['open', [url]]
     : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
       : ['xdg-open', [url]];

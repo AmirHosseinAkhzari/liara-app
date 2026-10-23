@@ -1,17 +1,19 @@
-// A standalone, static HTML report of what the plugin actually did in this session.
+// A standalone HTML report of what the plugin actually did in this session.
+// Deployments get their own Persian page (deploypage.mjs: plan cards, cost and balance charts,
+// a top-up picker when the balance is low, and a map of the connected services). Other
+// operations get the report below, in Persian or English.
 // Facts (actions, resources, deploy result, health checks, env var NAMES, prices) come from
 // the session journal and live price lookups; the narrative (request, summary, fixes, next
-// steps) comes from Claude and is labeled as such. No JavaScript, no external requests: CSS,
-// the official Liara logo and (for Persian) the Vazirmatn font are embedded. Every value is
-// escaped and passed through the secret scrubber first.
+// steps) comes from Claude and is labeled as such. No external requests: CSS, the official
+// Liara logo and (for Persian) the Vazirmatn font are embedded; only the deployment page has
+// one small inline script (the top-up calculator). Every value is escaped and passed through
+// the secret scrubber first.
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { sessionJournal } from './audit.mjs';
-import { scrubLine } from './verify.mjs';
 import { priceOf } from './pricing.mjs';
-
-const ASSETS = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets');
+import { esc, escLong, safeUrl, faDigits, toman, fmtTime, v, pill, logoSvg, fontFaces } from './htmlkit.mjs';
+import { buildDeployPage } from './deploypage.mjs';
 
 const L = {
   en: {
@@ -49,7 +51,7 @@ const L = {
 };
 
 // Persian wording for strings that tools record in English.
-const KIND_FA = { app: 'برنامه', database: 'دیتابیس', bucket: 'باکت', mail: 'ایمیل', dns: 'DNS', ai: 'هوش مصنوعی', vps: 'سرور مجازی' };
+const KIND_FA = { app: 'برنامه', database: 'دیتابیس', bucket: 'باکت', mail: 'ایمیل', dns: 'DNS', ai: 'هوش مصنوعی', vps: 'سرور مجازی', service: 'سرویس داکر' };
 function checkNameFa(name) {
   const rules = [
     [/^app exists$/, () => 'برنامه در لیارا وجود دارد'],
@@ -86,61 +88,8 @@ const TOOL_NAMES = {
 // Read-only lookups that would only clutter the timeline.
 const QUIET = new Set(['whoami', 'plans', 'list_resources', 'get_envs', 'release_status', 'app_logs', 'docs_search', 'docs_read', 'vps_list', 'write_report', 'accounts', 'api']);
 
-const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-const esc = (v) => scrubLine(String(v ?? '')).replace(/[&<>"']/g, (c) => ESC[c]);
-const escLong = (v) => String(v ?? '').split('\n').map((l) => esc(l)).join('<br>');
-const safeUrl = (u) => {
-  try {
-    const x = new URL(String(u));
-    return x.protocol === 'https:' || x.protocol === 'http:' ? x.toString() : null;
-  } catch {
-    return null;
-  }
-};
-const faDigits = (s) => String(s).replace(/\d/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[d]);
-
-function fmtNum(n, lang) {
-  if (typeof n !== 'number') return lang === 'fa' ? 'نامعلوم' : 'unknown';
-  const s = Math.round(n).toLocaleString('en-US');
-  return lang === 'fa' ? faDigits(s).replace(/,/g, '٬') : s;
-}
-const toman = (n, lang) => (typeof n !== 'number' ? fmtNum(n, lang) : lang === 'fa' ? `${fmtNum(n, lang)} تومان` : `${fmtNum(n, lang)} Toman`);
-function fmtTime(iso, lang) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return String(iso);
-  const opts = { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Tehran' };
-  return lang === 'fa' ? new Intl.DateTimeFormat('fa-IR', opts).format(d) : `${new Intl.DateTimeFormat('en-GB', opts).format(d)}`;
-}
-// Latin values inside Persian text are isolated so they can't reorder the line.
-const v = (x) => `<bdi>${esc(x)}</bdi>`;
-const pill = (kind, label) => `<span class="pill pill-${kind}">${esc(label)}</span>`;
-
 function statusKind(outcome) {
   return { done: 'ok', reused: 'info', failed: 'fail', error: 'fail', declined: 'muted', 'waiting for confirmation': 'muted' }[outcome] || 'muted';
-}
-
-function logoSvg() {
-  try {
-    const svg = fs.readFileSync(path.join(ASSETS, 'liara-logo.svg'), 'utf8');
-    // The file was checked to contain no scripts or external references.
-    return /<script|on\w+=|href="http/i.test(svg) ? '' : svg.replace('<svg ', '<svg role="img" aria-label="Liara" class="logo" ');
-  } catch {
-    return '';
-  }
-}
-
-function fontFaces(lang) {
-  if (lang !== 'fa') return '';
-  const face = (file, weight) => {
-    try {
-      const b64 = fs.readFileSync(path.join(ASSETS, 'fonts', file)).toString('base64');
-      return `@font-face{font-family:"Vazirmatn";font-weight:${weight};font-style:normal;font-display:swap;src:url(data:font/ttf;base64,${b64}) format("truetype");}`;
-    } catch {
-      return '';
-    }
-  };
-  return face('Vazirmatn-Regular.ttf', 400) + face('Vazirmatn-Bold.ttf', 700);
 }
 
 const CSS = `
@@ -214,13 +163,16 @@ export function collectFacts(journal) {
   const envNames = new Set();
   for (const e of entries) {
     const r = e.result || {};
+    // forApp / envVars: which app a service was connected to, and the env var names it got.
+    const link = { forApp: r.connectedTo || e.forApp || undefined, envVars: r.envVarNames || undefined };
     if (['done', 'reused'].includes(e.outcome)) {
       if (e.tool === 'create_app' || (e.tool === 'deploy' && e.plan)) infra.push({ kind: 'app', name: r.app || e.target, how: r.created === false || e.outcome === 'reused' ? 'reused' : 'created', plan: e.plan, bundle: e.bundle });
-      if (e.tool === 'connect_database') infra.push({ kind: 'database', name: r.database?.hostname || e.target, detail: r.database?.type, how: e.plan ? 'created' : 'configured', plan: e.plan, bundle: e.bundle });
-      if (e.tool === 'connect_storage') infra.push({ kind: 'bucket', name: r.bucket || e.target, how: e.plan ? 'created' : 'configured', plan: e.plan });
-      if (e.tool === 'connect_mail') infra.push({ kind: 'mail', name: e.target, how: e.plan ? 'created' : 'configured', plan: e.plan });
-      if (e.tool === 'connect_dns') infra.push({ kind: 'dns', name: e.target, how: 'configured' });
-      if (e.tool === 'connect_ai') infra.push({ kind: 'ai', name: e.target, how: 'configured' });
+      if (e.tool === 'connect_database') infra.push({ kind: 'database', name: r.database?.hostname || e.target, detail: r.database?.type, how: e.plan ? 'created' : 'configured', plan: e.plan, bundle: e.bundle, ...link });
+      if (e.tool === 'connect_storage') infra.push({ kind: 'bucket', name: r.bucket || e.target, how: e.plan ? 'created' : 'configured', plan: e.plan, ...link });
+      if (e.tool === 'connect_mail') infra.push({ kind: 'mail', name: e.target, how: e.plan ? 'created' : 'configured', plan: e.plan, ...link });
+      if (e.tool === 'connect_dns') infra.push({ kind: 'dns', name: e.target, how: 'configured', forApp: e.forApp || undefined });
+      if (e.tool === 'connect_ai') infra.push({ kind: 'ai', name: e.target, how: e.plan ? 'created' : 'configured', plan: e.plan, ...link });
+      if (e.tool === 'deploy_service') infra.push({ kind: 'service', name: r.service || e.target, detail: r.image, how: 'created', plan: e.plan, bundle: e.bundle, ...link });
       if (e.tool === 'create_vm') infra.push({ kind: 'vps', name: e.target, how: r.created === false ? 'reused' : 'created', plan: e.plan });
     }
     for (const n of r.envVarNames || []) envNames.add(n);
@@ -233,11 +185,13 @@ export function collectFacts(journal) {
 }
 
 export async function buildReport({ lang = 'en', operation = 'deployment', request, summary, issues = [], remaining = [], docs = [], project = null, api = null, journal = sessionJournal(), now = new Date() }) {
+  const f = collectFacts(journal);
+  const appName = f.deploy?.result?.app || f.infra.find((i) => i.kind === 'app')?.name || project?.suggestedAppName || '';
+  // A deployment gets the Persian page with cards and charts, whatever lang says.
+  if (operation === 'deployment') return buildDeployPage({ f, api, now, appName, platform: project?.platform });
   const t = L[lang] || L.en;
   lang = L[lang] ? lang : 'en';
-  const f = collectFacts(journal);
   const title = t.titles[operation] || t.titles.other;
-  const appName = f.deploy?.result?.app || f.infra.find((i) => i.kind === 'app')?.name || project?.suggestedAppName || '';
   const parts = [];
 
   // Summary: a facts line computed from the recorded actions, then Claude's narrative (labeled).
@@ -313,7 +267,7 @@ export async function buildReport({ lang = 'en', operation = 'deployment', reque
   if (billable.length && api) {
     const rows = []; let total = 0; let fetched = null; let source = null; let complete = true;
     for (const i of billable) {
-      const kind = { app: 'app', database: 'database', bucket: 'bucket', mail: 'mail', vps: 'vps' }[i.kind];
+      const kind = { app: 'app', service: 'app', database: 'database', bucket: 'bucket', mail: 'mail', vps: 'vps' }[i.kind];
       const p = kind ? await priceOf(api, { kind, plan: i.plan, bundle: i.bundle }).catch(() => null) : null;
       if (typeof p?.monthlyToman === 'number') total += p.monthlyToman; else complete = false;
       fetched ||= p?.fetchedAt; source ||= p?.source;
@@ -359,8 +313,16 @@ ${parts.join('\n')}
 export function checkReport(html) {
   const problems = [];
   if (!html.startsWith('<!DOCTYPE html>')) problems.push('missing doctype');
-  if (/<script\b/i.test(html)) problems.push('contains a script');
-  if (/\bon[a-z]+\s*=\s*["']/i.test(html.replace(/<style>[\s\S]*?<\/style>/, ''))) problems.push('contains an inline event handler');
+  // At most one inline script (the deployment page's top-up calculator): no src, no network.
+  const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
+  if (scripts.length !== (html.match(/<script\b/gi) || []).length) problems.push('contains an unclosed script');
+  if (scripts.length > 1) problems.push('contains more than one script');
+  for (const [, attrs, code] of scripts) {
+    if (/\bsrc\s*=/i.test(attrs)) problems.push('loads an external script');
+    if (/\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|importScripts|eval|localStorage|sessionStorage|indexedDB)\b|\bimport\s*\(|\bFunction\s*\(|document\.cookie|\.src\s*=|\bhref\s*=/.test(code)) problems.push('script uses the network or storage');
+  }
+  const markup = html.replace(/<style>[\s\S]*?<\/style>/, '').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  if (/\bon[a-z]+\s*=\s*["']/i.test(markup)) problems.push('contains an inline event handler');
   if (/javascript:/i.test(html)) problems.push('contains a javascript: URL');
   if (/<(link|img|iframe|object|embed)\b[^>]*(src|href)=["']https?:/i.test(html)) problems.push('loads an external resource');
   if (/@import|url\(["']?https?:/i.test(html)) problems.push('CSS loads an external resource');

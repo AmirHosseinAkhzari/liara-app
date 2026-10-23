@@ -1,7 +1,8 @@
 // Tool definitions shared by the MCP server and the CLI.
 import { createClient } from './api.mjs';
 import { detectProject, summarize, normalizePlatform } from './detect.mjs';
-import { deploy, releaseStatus, appLogs, getPlans, getApp, createApp, writeLiaraJson } from './deploy.mjs';
+import { deploy, releaseStatus, appLogs, getPlans, getApp, createApp, writeLiaraJson, bundlesOf, BUILD_LOCATIONS } from './deploy.mjs';
+import { liveEvent, liveActive, liveUrl, startLive, liveBrowserAllowed } from './live.mjs';
 import { getEnvs, setEnvs, connectDatabase, connectStorage, connectMail, connectDns, connectAi } from './services.mjs';
 import { migrateDatabase, migrateStorage } from './migrate.mjs';
 import { browserLogin, logout, useAccount, readAuthFile, AUTH_FILE } from './login.mjs';
@@ -207,13 +208,13 @@ export const TOOLS = [
   },
   {
     name: 'billing',
-    description: 'Billing of the current account (personal or the chosen team): balance in Toman, low-credit alert settings, free credit, every running app/database/bucket/VPS with its plan price, an estimated monthly total and how long the balance lasts at that rate, and resources worth checking (stopped, never deployed). Read-only: never pays or changes anything. Invoices and actual charges are only in the Liara console (no API).',
-    inputSchema: { type: 'object', properties: {} },
-    handler: (_, api) => billingOverview(api),
+    description: 'Billing of the current account (personal or the chosen team): balance in Toman, low-credit alert settings, free credit, every running app/database/bucket/VPS with its plan price, an estimated monthly and daily total, how long the balance lasts at that rate, and resources worth checking (stopped, never deployed). When the balance is low (lowBalance: under the account\'s alert amount, or lasting fewer than LIARA_LOW_BALANCE_DAYS days, default 10) it adds top-up quotes for 10 and 30 days: ask the user with buttons (10 days, 30 days, or a number they choose) and call again with days for a custom number. Read-only: never pays or changes anything. Invoices and actual charges are only in the Liara console (no API).',
+    inputSchema: { type: 'object', properties: { days: num('Top-up quote: how many days (1-3650) the current resources should keep running. Returns the cost for that many days and the credit to add, in Toman and in Rial (what the console asks for).') } },
+    handler: (args, api) => billingOverview(api, { days: args.days }),
   },
   {
     name: 'deploy',
-    description: 'Deploy a project folder to a Liara app: creates the app if missing (needs planID), packs the source (respects .gitignore and .liaraignore, skips .env files), uploads it, starts a release and waits for the result. Returns state, URL and build log tail on failure.',
+    description: 'Deploy a project folder to a Liara app: creates the app if missing (needs planID), packs the source (respects .gitignore and .liaraignore, skips .env files), uploads it, starts a release and waits for the result. Builds in Germany (packages download without limits); if Germany is not available it builds in Iran by itself (buildLocationFallback says why). Opens the live progress page in the browser the first time (see live_progress). Returns state, URL and build log tail on failure. When the build runs out of time (buildTimedOut), upgradeForBuildTime names the next feature bundle (longer build time): call change_app_plan with it, then deploy again.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -230,11 +231,20 @@ export const TOOLS = [
         message: str('Release message.'),
         includeEnvFiles: bool('Also upload .env files (default false; prefer set_envs).'),
         saveLiaraJson: bool('Write app/platform/port to liara.json after a successful deploy (default true).'),
+        buildLocation: str('Where Liara builds: germany (default) or iran. Default: liara.json build.location, else germany with an automatic fallback to iran.', { enum: BUILD_LOCATIONS }),
+        livePage: bool('Open the live progress page in the browser when the deploy starts (default true; once per session).'),
       },
     },
     async handler(args, api, ctx) {
+      if (args.livePage !== false && !liveActive()) await startLive({ open: liveBrowserAllowed() }).catch(() => null);
       const res = await deploy(api, args);
       res.account = describeContext(ctx.team, api);
+      if (liveUrl()) res.liveUrl = liveUrl();
+      if (!res.success && buildTimedOut(res)) {
+        res.buildTimedOut = true;
+        res.upgradeForBuildTime = await buildTimeUpgrade(api, res.app).catch((err) => ({ possible: false, why: err.message }));
+        liveEvent({ type: 'buildTimeout', app: res.app, upgrade: res.upgradeForBuildTime });
+      }
       if (res.success && args.saveLiaraJson !== false) {
         // Remember the team like `liara init` does, so the next deploy (plugin or CLI) goes to the same place.
         const teamID = api.auth.teamID || null;
@@ -533,12 +543,12 @@ export const TOOLS = [
   },
   {
     name: 'write_report',
-    description: 'Write a static, self-contained HTML report (no JavaScript, works offline, Liara branding, Persian RTL or English) of what was actually done in this session: actions with results and approvals, infrastructure created/reused, env var names (never values), deployment result, health checks, issues and fixes, live-priced costs, remaining tasks and docs links. Facts come from the recorded actions; pass only the narrative. Saved under <project>/liara-reports/ (never deployed). Then give the user the file.',
+    description: 'Write a self-contained HTML page (works offline, Liara branding) of what was actually done in this session. operation "deployment" (the default) writes the Persian deployment page, always in Persian, made of cards and charts only: the plans bought (picture, specs, price), a chart of the monthly cost per service, the balance with days left and a chart of it running down, a top-up picker (10 days, 30 days or any number, in Toman and Rial) when the balance is low, and an n8n-style map of how the app connects to its services (env var names on each link, never values). Other operations write the full report (Persian RTL or English): actions, infrastructure, env var names, deployment result, health checks, issues and fixes, costs, remaining tasks and docs links. Facts come from the recorded actions and the live Liara API; pass only the narrative. Saved under <project>/liara-reports/ (never deployed). Then give the user the file.',
     inputSchema: {
       type: 'object',
       properties: {
         path: PATH,
-        lang: str('fa (Persian, right-to-left) or en. Default: the language the user writes in.', { enum: ['fa', 'en'] }),
+        lang: str('fa (Persian, right-to-left) or en. Default: the language the user writes in. Ignored for operation "deployment" (always Persian).', { enum: ['fa', 'en'] }),
         operation: str('deployment | vps | troubleshooting | configuration | other', { enum: ['deployment', 'vps', 'troubleshooting', 'configuration', 'other'] }),
         request: str('What the user asked for, in one or two sentences.'),
         summary: str('What was accomplished, honestly (say what failed or was skipped).'),
@@ -551,13 +561,16 @@ export const TOOLS = [
       const root = path.resolve(ctx.cwd, args.path || '.');
       const project = fs.existsSync(root) ? await detectProject(root, { checkDns: false }).catch(() => null) : null;
       const now = new Date();
-      const { html, appName, sections } = await buildReport({ ...args, lang: args.lang || 'en', operation: args.operation || 'deployment', project, api, now });
+      const operation = args.operation || 'deployment';
+      const lang = operation === 'deployment' ? 'fa' : args.lang || 'en';
+      const { html, appName, sections } = await buildReport({ ...args, lang, operation, project, api, now });
       const check = checkReport(html);
       if (!check.ok) throw new Error(`Report failed its checks: ${check.problems.join('; ')}`);
-      const file = writeReportFile(root, html, { appName, operation: args.operation || 'deployment', lang: args.lang || 'en', now });
+      const file = writeReportFile(root, html, { appName, operation, lang, now });
       const written = fs.readFileSync(file, 'utf8');
       if (written !== html) throw new Error('The report file could not be written correctly.');
-      return { written: true, file, fileUrl: `file://${encodeURI(file)}`, bytes: Buffer.byteLength(written), sections, language: args.lang || 'en', checks: { static: true, noScript: true, noExternalResources: true, ...check }, next: 'Send the file to the user (attach it) and mention where it is saved. liara-reports/ is never uploaded by deploy; consider adding it to .gitignore.' };
+      const scripts = (html.match(/<script\b/gi) || []).length;
+      return { written: true, file, fileUrl: `file://${encodeURI(file)}`, bytes: Buffer.byteLength(written), sections, language: lang, checks: { selfContained: true, inlineScripts: scripts, noExternalResources: true, ...check }, next: 'Send the file to the user (attach it) and mention where it is saved. liara-reports/ is never uploaded by deploy; consider adding it to .gitignore.' };
     },
   },
   {
@@ -699,11 +712,11 @@ export const TOOLS = [
         why: str('Why these steps are needed, in one sentence.'),
         operations: {
           type: 'array',
-          description: 'Each step: tool (e.g. create_app, connect_database, connect_storage, set_envs, deploy), target (app name, database hostname, bucket, domain, workspace, VM name), summary (one line for the user); for steps that create a paid resource also kind (app | database | bucket | mail | vps), plan and bundle.',
+          description: 'Each step: tool (e.g. create_app, connect_database, connect_storage, set_envs, deploy), target (app name, database hostname, bucket, domain, workspace, VM name), summary (one line for the user); for steps that create a paid resource also kind (app | database | bucket | mail | vps), plan and bundle. A step that runs only if needed has ifNeeded: true (e.g. change_app_plan to the next bundle when a build runs out of time); it is named in the question but not counted in the total.',
           items: {
             type: 'object',
             required: ['tool', 'target', 'summary'],
-            properties: { tool: str('Tool name.'), target: str('Resource name.'), summary: str('One line for the user.'), kind: str('app | database | bucket | mail | vps'), plan: str('Plan ID.'), bundle: str('Feature bundle ID.') },
+            properties: { tool: str('Tool name.'), target: str('Resource name.'), summary: str('One line for the user.'), kind: str('app | database | bucket | mail | vps'), plan: str('Plan ID.'), bundle: str('Feature bundle ID.'), ifNeeded: bool('Runs only if needed (e.g. a bundle upgrade when a build runs out of time).') },
           },
         },
         confirmToken: str('Only after the user confirmed in chat (see howToConfirm).'),
@@ -722,13 +735,28 @@ export const TOOLS = [
         const price = op.kind && op.plan ? await priceOf(api, { kind: op.kind, plan: op.plan, bundle: op.bundle }).catch(() => null) : null;
         priced.push({ ...op, monthlyToman: price?.monthlyToman ?? (op.kind ? null : 0), fetchedAt: price?.fetchedAt });
       }
-      const billable = priced.filter((o) => o.kind);
+      const billable = priced.filter((o) => o.kind && !o.ifNeeded);
       const total = billable.reduce((sum, o) => sum + (o.monthlyToman || 0), 0);
       const unknown = billable.some((o) => o.monthlyToman === null);
+      const account = accountLabel(api, ctx);
+      const n = billable.length;
+      // One line, e.g. "I'll add 10 services to your Liara account (personal account): about 1,000,000 Toman a day."
+      let short = n
+        ? `I'll add ${n} service${n === 1 ? '' : 's'} to your Liara account (${account}): about ${formatToman(total / 30)} a day${unknown ? ', plus items whose price is unknown' : ''}.`
+        : `I'll make ${ops.length} change${ops.length === 1 ? '' : 's'} to your Liara account (${account}), with no new costs.`;
+      // Steps that run only if needed: a bundle upgrade when a build runs out of time.
+      for (const o of priced.filter((x) => x.ifNeeded && x.tool === 'change_app_plan')) {
+        const base = priced.find((x) => x.tool === 'create_app' && x.target === o.target);
+        const extra = typeof o.monthlyToman === 'number' && typeof base?.monthlyToman === 'number' ? Math.max(0, o.monthlyToman - base.monthlyToman) : null;
+        o.extraMonthlyToman = extra;
+        const mins = buildMinutes(o.bundle || '');
+        short += ` If a build needs more time, I'll move ${o.target} to the ${o.bundle} bundle${mins ? ` (builds up to ${mins} minutes)` : ''}: about ${extra === null ? 'an unknown amount' : formatToman(extra / 30)} more a day.`;
+      }
       const c = {
+        short,
         risk: billable.length ? 'billable' : 'change',
         title: `Approve plan: ${args.title}`,
-        account: accountLabel(api, ctx),
+        account,
         why: args.why,
         effect: `${ops.length} steps run without further questions for 2 hours.`,
         cost: billable.length ? `${formatToman(total)}/month in total${unknown ? ' plus items whose price is unknown' : ''} (estimate from live prices)` : 'No new paid resources.',
@@ -744,7 +772,51 @@ export const TOOLS = [
       if (!gate.ok) return gate.result;
       const planId = crypto.randomBytes(5).toString('hex');
       approvePlan(planId, args.title, ops.map((o) => ({ tool: o.tool, target: o.target, plan: o.plan, bundle: o.bundle })));
-      return { approved: true, planId, via: gate.via, validFor: '2 hours', operations: priced, totalMonthlyToman: total, priceComplete: !unknown };
+      return { approved: true, planId, via: gate.via, validFor: '2 hours', question: short, operations: priced, totalMonthlyToman: total, totalDailyToman: Math.round(total / 30), priceComplete: !unknown };
+    },
+  },
+  {
+    name: 'change_app_plan',
+    description: 'Change a Liara app\'s plan or feature bundle. The bundle sets how long a build may run (bronze 5, silver 10, gold 20 minutes): when deploy says buildTimedOut, call this with upgradeForBuildTime (app and bundlePlanID), then deploy again. Costs more per month: asks with one short line first, unless approve_plan already listed this exact change (ifNeeded).',
+    inputSchema: {
+      type: 'object',
+      required: ['app'],
+      properties: {
+        app: APP,
+        planID: str('New plan (default: keep the current one).'),
+        bundlePlanID: str('New feature bundle (see plans: bundles with prices, or deploy upgradeForBuildTime).'),
+      },
+    },
+    async handler(args, api) {
+      const p = await getApp(api, args.app);
+      if (!p) throw new Error(`App "${args.app}" not found.`);
+      const planID = args.planID || p.planID;
+      if (!args.bundlePlanID && planID === p.planID) throw new Error('Nothing to change: pass planID or bundlePlanID.');
+      const body = { planID };
+      if (args.bundlePlanID) body.bundlePlanID = args.bundlePlanID;
+      await api.post('paas', `/v1/projects/${encodeURIComponent(args.app)}/resize`, body);
+      const bundle = args.bundlePlanID || p.bundlePlanID || null;
+      return { app: args.app, changed: true, plan: planID, bundle, from: { plan: p.planID, bundle: p.bundlePlanID || null }, buildMinutes: buildMinutes(bundle || ''), note: 'The new limits apply from the next deploy: deploy again now.' };
+    },
+  },
+  {
+    name: 'live_progress',
+    description: 'Open the live progress page in the user\'s browser: a local, read-only Persian page that shows the deploy as it happens (each step, upload, build location and build log, health checks, fixes in progress, a timeline). Call it once when a deploy starts, right after the plan is approved (deploy also opens it if it is not open yet). Later, pass note to post a short line to the page in the user\'s language, e.g. what you are fixing. Returns the URL; give it to the user if the browser did not open.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        note: str('A short status line for the page, e.g. "Adding the missing start script, then deploying again".'),
+        title: str('Name shown on the page, e.g. the app name.'),
+        open: bool('Open the page in the browser (default: only the first time).'),
+      },
+    },
+    async handler(args) {
+      const first = !liveActive();
+      if (args.title) liveEvent({ type: 'session', title: args.title });
+      if (args.note) liveEvent({ type: 'note', text: String(args.note).slice(0, 300) });
+      const wantOpen = (args.open ?? first) && liveBrowserAllowed();
+      const r = await startLive({ open: wantOpen });
+      return { url: r.url, opened: r.opened, ...(wantOpen && !r.opened ? { note: 'Could not open a browser: give the user the URL.' } : {}), ...(args.note ? { posted: true } : {}) };
     },
   },
   {
@@ -766,11 +838,34 @@ export const TOOLS = [
 ];
 
 // Which price list a billable tool's plan belongs to (for reports).
-const PRICE_KIND = { create_app: 'app', deploy: 'app', deploy_service: 'app', connect_database: 'database', connect_storage: 'bucket', connect_mail: 'mail', create_vm: 'vps', vm_action: 'vps' };
+const PRICE_KIND = { create_app: 'app', deploy: 'app', deploy_service: 'app', change_app_plan: 'app', connect_database: 'database', connect_storage: 'bucket', connect_mail: 'mail', create_vm: 'vps', vm_action: 'vps' };
 
 // Tools that act on the login itself, not on an account's resources.
-const ACCOUNT_LEVEL = new Set(['login', 'accounts', 'logout']);
+const ACCOUNT_LEVEL = new Set(['login', 'accounts', 'logout', 'live_progress']);
 // Always confirmed on their own, never through approve_plan.
+// A feature bundle sets the longest a build may run (docs: paas/details/plans/software-plans):
+// bronze 5, silver 10, gold 20 minutes. IDs are matched by name; unknown names rank by price.
+const BUNDLE_MINUTES = [[/bronze|basic/i, 5], [/silver|standard/i, 10], [/gold|pro|premium/i, 20]];
+export const buildMinutes = (id) => BUNDLE_MINUTES.find(([re]) => re.test(String(id)))?.[1] ?? null;
+const BUNDLE_DOCS = 'https://docs.liara.ir/paas/details/plans/software-plans/';
+// The release ran out of build time (not a network timeout inside the build).
+export const buildTimedOut = (res) => /^TIMEOUT$/i.test(res.state || '') || /build (has )?(timed out|exceeded|took too long)|maximum build time|build time ?(out|limit)|deadline exceeded/i.test(res.buildLogTail || '');
+
+// The next bundle up for an app (longer build time), with what it adds per month and day.
+export async function buildTimeUpgrade(api, app) {
+  const p = await getApp(api, app);
+  if (!p?.planID) return { possible: false, why: `App ${app} or its plan was not found.` };
+  const c = await meCatalog(api);
+  const list = (bundlesOf(c.plans, 'projectBundlePlans', p.planID) || []).filter((b) => typeof b.monthlyToman === 'number').sort((a, b) => a.monthlyToman - b.monthlyToman);
+  if (!list.length) return { possible: false, why: `Plan ${p.planID} has no feature bundles, so its build time can't be raised. A g2 plan with a bundle can.`, docs: BUNDLE_DOCS };
+  const cur = list.find((b) => b.id === p.bundlePlanID);
+  const curMin = buildMinutes(p.bundlePlanID || '');
+  const next = list.find((b) => b.id !== p.bundlePlanID && (!cur || b.monthlyToman > cur.monthlyToman) && (curMin === null || buildMinutes(b.id) === null || buildMinutes(b.id) > curMin));
+  if (!next) return { possible: false, why: `${app} already has the bundle with the longest build time (${p.bundlePlanID}). Make the build faster instead (cache, smaller dependencies, a prebuilt image).`, docs: BUNDLE_DOCS };
+  const extra = next.monthlyToman - (cur?.monthlyToman || 0);
+  return { possible: true, app, planID: p.planID, fromBundle: p.bundlePlanID || null, bundlePlanID: next.id, buildMinutes: buildMinutes(next.id), extraMonthlyToman: extra, extraDailyToman: Math.round(extra / 30), docs: BUNDLE_DOCS };
+}
+
 const NEVER_IN_PLAN = new Set(['approve_plan', 'logout', 'delete_app', 'delete_vm', 'vm_action', 'api']);
 
 function accountLabel(api, ctx) {
@@ -989,6 +1084,25 @@ const CONSENTS = {
     const effect = { start: 'Powers the server on.', shutdown: 'Shuts the server down gracefully; it is unreachable until started.', stop: 'Forces the power off (like pulling the plug); unsaved data can be lost.', reboot: 'Restarts the server; it is unreachable for a moment.' }[args.action];
     return { risk: 'change', title: `${args.action} VPS «${v}»`, target: v, plan: args.action, resource: `VPS ${v}`, effect, cost: 'No change to the plan.' };
   },
+  async change_app_plan(args, api) {
+    const p = await getApp(api, args.app);
+    if (!p) return null; // the handler reports "not found"
+    const planID = args.planID || p.planID;
+    const bundle = args.bundlePlanID || p.bundlePlanID || undefined;
+    const [now, next] = await Promise.all([
+      priceOf(api, { kind: 'app', plan: p.planID, bundle: p.bundlePlanID }).catch(() => null),
+      priceOf(api, { kind: 'app', plan: planID, bundle }).catch(() => null),
+    ]);
+    const extra = typeof next?.monthlyToman === 'number' && typeof now?.monthlyToman === 'number' ? next.monthlyToman - now.monthlyToman : null;
+    const mins = buildMinutes(bundle || '');
+    const to = args.bundlePlanID ? `the ${args.bundlePlanID} bundle` : `plan ${planID}`;
+    return {
+      risk: 'billable', title: `Upgrade «${args.app}» to ${to}`, target: args.app, plan: planID, bundle, resource: `app ${args.app}`,
+      short: `I'll move ${args.app} to ${to}${mins ? ` so builds can run up to ${mins} minutes` : ''}: about ${extra === null ? 'an unknown amount' : formatToman(Math.max(0, extra) / 30)} ${extra !== null && extra < 0 ? 'less' : 'more'} a day.`,
+      effect: `Changes the plan of ${args.app}${mins ? `; builds may run up to ${mins} minutes` : ''}. Applies from the next deploy.`,
+      cost: extra === null ? 'Price difference unknown.' : `${formatToman(extra)}/month ${extra < 0 ? 'less' : 'more'}.`,
+    };
+  },
   async delete_app(args, api) {
     if (!(await getApp(api, args.app))) return null; // the handler reports "not found"
     return { risk: 'destructive', title: `Delete app «${args.app}»`, target: args.app, resource: `app ${args.app}`, effect: 'Deletes the app with its releases, settings, env vars and disks. This cannot be undone. Databases and buckets are kept.', cost: 'Billing for the app stops.', typedConfirm: args.app };
@@ -1028,6 +1142,28 @@ export function toolRisk(name) {
   return t.consent ? 'change' : name === 'teams' || name === 'accounts' ? 'session' : 'read';
 }
 
+// The live progress page follows these tools step by step (lookups stay off the page).
+const LIVE_QUIET = new Set(['whoami', 'plans', 'list_resources', 'get_envs', 'release_status', 'app_logs', 'docs_search', 'docs_read', 'vps_list', 'accounts', 'api', 'live_progress', 'login', 'logout', 'teams', 'service_status', 'disks', 'estimate_cost', 'billing']);
+let liveSeq = 0;
+const waitingSteps = new Map(); // "tool|target" → step id of a call waiting for approval
+function liveStep(tool, target, { status }) {
+  if (LIVE_QUIET.has(tool)) return null;
+  const key = `${tool}|${target || ''}`;
+  // A call that waited for approval and comes back confirmed continues the same row.
+  const step = waitingSteps.get(key) || `s${++liveSeq}`;
+  if (status === 'waiting') waitingSteps.set(key, step); else waitingSteps.delete(key);
+  liveEvent({ type: 'step', step, tool, target, status });
+  return status === 'running' ? step : null;
+}
+function liveResult(tool, step, target, result, started) {
+  if (!step) return;
+  const status = result?.cancelled ? 'declined' : result?.confirmationRequired ? 'waiting' : result?.success === false ? 'failed' : result?.created === false ? 'reused' : 'done';
+  if (status === 'waiting') waitingSteps.set(`${tool}|${target || ''}`, step);
+  liveEvent({ type: 'step', step, tool, target, status, ms: Date.now() - started, ...(result?.error ? { error: String(result.error) } : {}) });
+  if (tool === 'verify_app' && Array.isArray(result?.checks)) liveEvent({ type: 'checks', app: result.app || target, healthy: result.healthy, checks: result.checks.map((c) => ({ name: c.name, ok: c.ok, detail: c.detail })) });
+  if (tool === 'diagnose' && result?.category) liveEvent({ type: 'diagnosis', app: target, category: result.category, explanation: result.explanation, fix: result.suggestedFix });
+}
+
 // ctx.elicit: shows a confirmation dialog in the client (MCP elicitation), when supported.
 export async function callTool(name, args = {}, { cwd = process.cwd(), elicit = null } = {}) {
   const tool = TOOLS.find((t) => t.name === name);
@@ -1060,16 +1196,20 @@ export async function callTool(name, args = {}, { cwd = process.cwd(), elicit = 
       const gate = await requireConsent(ctx, name, args, consent);
       if (!gate.ok) {
         record({ tool: name, risk: consent.risk, account, target: consent.target, dialog: ctx.dialog, outcome: gate.result.cancelled ? 'declined' : 'waiting for confirmation', result: gate.result, started });
+        liveStep(name, consent.target, { status: gate.result.cancelled ? 'declined' : 'waiting' });
         return gate.result;
       }
       via = gate.via;
     }
   }
   const risk = consent?.risk || toolRisk(name);
+  const liveTarget = consent?.target || args.app || args.bucket || args.domain || args.name || args.workspace || args.vm || args.databaseId;
+  const step = liveStep(name, liveTarget, { status: 'running' });
   try {
     const result = await tool.handler(args, api, ctx);
+    liveResult(name, step, liveTarget, result, started);
     const billed = consent?.risk === 'billable' ? { plan: consent.plan, bundle: consent.bundle, kind: PRICE_KIND[name] } : {};
-    record({ tool: name, risk, account, target: consent?.target || args.app || args.bucket || args.domain || args.name, consent: via, dialog: ctx.dialog, outcome: result?.cancelled ? 'declined' : result?.confirmationRequired ? 'waiting for confirmation' : result?.success === false ? 'failed' : result?.created === false ? 'reused' : 'done', result, started, ...billed });
+    record({ tool: name, risk, account, target: consent?.target || args.app || args.bucket || args.domain || args.name, forApp: args.connectTo || args.app, consent: via, dialog: ctx.dialog, outcome: result?.cancelled ? 'declined' : result?.confirmationRequired ? 'waiting for confirmation' : result?.success === false ? 'failed' : result?.created === false ? 'reused' : 'done', result, started, ...billed });
     return result;
   } catch (err) {
     // A resource "not found" is often just in another account: say where we looked.
@@ -1080,6 +1220,7 @@ export async function callTool(name, args = {}, { cwd = process.cwd(), elicit = 
         : ' (looked in the personal account). If it belongs to a team, pass team or switch with the teams tool.';
     }
     record({ tool: name, risk, account, target: consent?.target || args.app, consent: via, dialog: ctx.dialog, outcome: 'error', error: err.message, started });
+    if (step) liveEvent({ type: 'step', step, tool: name, target: liveTarget, status: 'error', error: err.message, ms: Date.now() - started });
     throw err;
   }
 }

@@ -99,6 +99,7 @@ test('github setup writes the documented workflow once, with team, port and plat
   const yaml = fs.readFileSync(path.join(repo, '.github/workflows/liara.yaml'), 'utf8');
   assert.match(yaml, /branches:\n {6}- main/);
   assert.match(yaml, /liara deploy --app="shop" --api-token="\$LIARA_TOKEN" --platform="node" --port=3000 --team-id="aaaaaaaaaaaaaaaaaaaaaaa2" --no-app-logs/);
+  assert.match(yaml, /--build-location="germany" \|\| liara deploy .* --build-location="iran"/, 'Germany first, Iran if that fails');
   assert.match(yaml, /cancel-in-progress: false/);
   assert.match(yaml, /secrets\.LIARA_API_TOKEN/);
   assert.ok(!fs.readFileSync(ghLog, 'utf8').includes('test-token'), 'the Liara token never reaches gh');

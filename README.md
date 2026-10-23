@@ -13,10 +13,10 @@ In any project, say **"deploy this to Liara"** or run `/liara:deploy`. Claude:
 
 1. **Logs in automatically** with the same browser login as `liara login`, and works in your personal account or a team you choose.
 2. **Analyzes the project**: framework, runtime version, port, build/start, workers, health endpoints, tests, and every service it uses (all 9 Liara database engines, Redis, S3 storage, email, DNS, AI, other APIs).
-3. **Shows live prices and asks once** (one confirmation dialog for the whole plan, with the monthly cost).
+3. **Asks once, in one line**: how many services it adds and what they cost a day.
 4. **Connects Liara services and sets env vars**, asks before replacing a working provider, and moves the data when you agree.
-5. **Deploys, then verifies** with real HTTP health checks; on failure it **diagnoses from evidence**, fixes and redeploys.
-6. **Writes a static HTML report** (Liara branding, Persian or English).
+5. **Deploys, then verifies** with real HTTP health checks. It builds in Germany, or in Iran when Germany is not available. On failure it **diagnoses from evidence, fixes it itself** and redeploys. A build that runs out of time gets a bigger feature bundle. A **live progress page** opens in your browser so you can watch every step.
+6. **Writes a Persian deployment page** (Liara branding, cards and charts): plans bought, cost per service, balance and days left with a top-up button when it runs low, and a map of the connected services.
 
 It also answers from the official docs, compares prices, checks billing, creates and manages VPS, checks Liara's status page, and sets up automatic deploys from GitHub. Details, permissions and API limitations: [plugins/liara/README.md](plugins/liara/README.md).
 

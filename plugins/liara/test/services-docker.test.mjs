@@ -71,6 +71,14 @@ test('deploy_service runs Neo4j in the app\'s network and wires the connection, 
   await call('deploy_service', { name: 'graph-shop-neo4j', service: 'neo4j', tag: '5.24', planID: 'small-g2', connectTo: 'graph-shop', wait: 5 });
   const again = Object.fromEntries(mock.state.projects['graph-shop'].envs.map((e) => [e.key, e.value]));
   assert.equal(again.NEO4J_PASSWORD, mainEnv.NEO4J_PASSWORD);
+  // The deployment page's service map gets the link: which app, which env var names (no values).
+  const { sessionJournal } = await import('../lib/audit.mjs');
+  const { collectFacts } = await import('../lib/report.mjs');
+  const node = collectFacts(sessionJournal()).infra.find((i) => i.kind === 'service' && i.name === 'graph-shop-neo4j');
+  assert.equal(node.forApp, 'graph-shop');
+  assert.deepEqual(node.envVars, ['NEO4J_URI', 'NEO4J_USERNAME', 'NEO4J_PASSWORD']);
+  assert.equal(node.plan, 'small-g2');
+  assert.ok(!JSON.stringify(sessionJournal()).includes(mainEnv.NEO4J_PASSWORD), 'no password in the journal');
 });
 
 test('deploy_service takes any image (from compose) and checks the reference', async () => {

@@ -5,7 +5,7 @@ description: Deploy a project to Liara (Iranian cloud platform) end to end and p
 
 # Deploy to Liara
 
-Tools (MCP `liara`): login, accounts, logout, whoami, teams, scan_project, deploy_service, connect_disk, disks, set_cron, list_resources, plans, estimate_cost, approve_plan, create_app, connect_database, connect_storage, connect_mail, connect_dns, connect_ai, migrate_database, migrate_storage, set_envs, get_envs, deploy, release_status, verify_app, diagnose, app_logs, app_action, delete_app, service_status, docs_search, docs_read, github_autodeploy, write_report, billing, vps_list, create_vm, vm_action, api.
+Tools (MCP `liara`): login, accounts, logout, whoami, teams, scan_project, deploy_service, connect_disk, disks, set_cron, list_resources, plans, estimate_cost, approve_plan, create_app, connect_database, connect_storage, connect_mail, connect_dns, connect_ai, migrate_database, migrate_storage, set_envs, get_envs, deploy, release_status, verify_app, diagnose, app_logs, app_action, delete_app, service_status, docs_search, docs_read, github_autodeploy, write_report, billing, vps_list, create_vm, vm_action, change_app_plan, live_progress, api.
 
 ## Ground rules
 
@@ -60,8 +60,10 @@ Production env file: `.env.production` > `.env` > the Liara app's env. Never cop
 ## 4. Plans, cost and one approval
 
 1. `plans` → smallest plan that meets the app's needs (not just the cheapest). Plans with `bundles` need a bundle; plans with `needsNetwork` (g2) need a private network shared with the databases (the only existing one is reused; if none, `createNetwork: "<app>-net"` after the user agrees).
-2. Ask once (AskUserQuestion): app name (suggest `suggestedAppName`), app plan + bundle, each resource's plan, with the **total monthly cost** from `estimate_cost` (say it is an estimate without taxes or usage).
-3. `approve_plan {title, why, operations}` listing every step you will run: `create_app` (kind app + plan + bundle), each `connect_*` that creates something (kind + plan), `set_envs`, `migrate_*`, `deploy`. The user sees one dialog with every step and the live total. Use the exact plan/bundle in the later calls, or they will ask again.
+2. Choose the app name (`suggestedAppName`), the plans and bundles yourself, from what the project needs. Don't ask a separate question about them: the approval in item 4 is the only question, and the user can ask for changes there ("Review details").
+3. Check the money before asking: `billing`. If `lowBalance` is true, say how long the balance lasts (`balanceLastsAboutDays`) and ask with buttons (AskUserQuestion) how long the services should keep running: **10 days**, **30 days**, or **Other** (a number of days the user types). Show the quote from `topUp.quotes` (for Other: `billing {days}`): the cost for that period and the credit to add in Toman and in Rial (the console's field takes Rial), with the console link and `topUp.docs`. The plugin never pays: continue when the user says they added credit or wants to go ahead anyway.
+4. `approve_plan {title, why, operations}` listing every step you will run: `create_app` (kind app + plan + bundle), each `connect_*` that creates something (kind + plan), `set_envs`, `migrate_*`, `deploy`. Also add, with `ifNeeded: true`, a `change_app_plan` step for the app (kind app, same plan, the next bundle up from `plans`), so a build that runs out of time gets more time without asking again. The user sees ONE short line, e.g. *"I'll add 3 services to your Liara account (personal account): about 45,000 Toman a day. If a build needs more time, I'll move shop to the pro bundle: about 18,000 Toman more a day."* When the dialog can't be shown, ask that same line (the result's `message`) in the user's language with AskUserQuestion: **Allow**, **Cancel**, **Review details** (then list `consent.details`). Use the exact plan/bundle in the later calls, or they will ask again.
+5. Right after the approval: `live_progress {title: <app>}`. It opens the live progress page in the user's browser (Persian, updates by itself: stages, build location and log, health checks, fixes, timeline). Tell the user in one line that it is open, or give `url` if `opened` is false. `deploy` opens it too if you forgot.
 
 ## 5. Create and connect (pass `app`, `platform` and `envKeys` from scan_project)
 
@@ -81,16 +83,17 @@ See [reference/platforms.md](reference/platforms.md) and the platform's docs pag
 
 ## 7. Deploy, verify, fix
 
-1. `deploy {path, app}` (waits up to 240 s; sends the right platform ID and runtime version).
+1. `deploy {path, app}` (waits up to 240 s; sends the right platform ID and runtime version). It builds in Germany, where packages download without limits; if Germany is not available it builds in Iran by itself. Mention `buildLocationFallback` in one line when it happens. A `buildLocation` already set in liara.json is kept.
 2. `verify_app {app, path}`: release state, real HTTPS requests to the app and its health endpoints, custom domains, log errors, env vars the code needs. The deploy is done only when every check passes; list `notVerified` honestly.
-3. Any failure → `diagnose {app, path}`. Explain the category and evidence in plain words, make the smallest fix (code, config or env) the evidence supports, test locally if possible, redeploy, `verify_app` again. A `platform-incident` means wait, not change code. Never retry without new evidence; stop after 3 attempts and show what you tried.
+3. Any failure: fix it yourself, don't ask. `diagnose {app, path}`, make the smallest fix the evidence supports (code, config or env), test locally if possible, post one line to the page with `live_progress {note}` in the user's language (what failed and what you are changing), redeploy, `verify_app` again. Ask the user only when the fix needs money beyond the approved plan, a secret only they have, deleting data, or a product decision. A `platform-incident` means wait, not change code. Never retry without new evidence; stop after 3 attempts and show what you tried.
+4. `buildTimedOut: true` means the build ran out of time. Liara's feature bundle sets the limit: bronze 5, silver 10, gold 20 minutes. Call `change_app_plan {app, bundlePlanID: upgradeForBuildTime.bundlePlanID}`. If the plan listed it with `ifNeeded`, it runs without a question; otherwise it asks with one short line. Then post a note and deploy again. If `upgradeForBuildTime.possible` is false (already the longest bundle), make the build faster instead: dependency cache, fewer dependencies, a prebuilt image.
 
 ## 8. Report and next steps
 
-1. `write_report {path, lang: <user's language: fa or en>, request, summary, issues, remaining, docs}` with links from `docs_search`. It writes a static HTML file from the recorded actions. Attach it with SendUserFile (display "attach") and say where it is saved.
+1. `write_report {path, operation: "deployment"}`. It writes the deployment page, always in Persian, made only of cards and charts built from the recorded actions and live Liara data: the plans bought (picture, specs, price), a chart of the monthly cost per service, the balance with days left and a chart of it running down, a top-up button (10 days, 30 days or any number) when the balance is low, and an n8n-style map of how the app connects to its services. It shows no narrative, so the narrative goes in chat (next item). Attach it with SendUserFile (display "attach") and say where it is saved.
 2. In chat, lead with the result (live URL or what blocks it) and the account. Then resources (with plans and the estimated monthly cost), data moved, env vars (names only), code changes, what was not verified, and what the user must still do (nameservers, mail DNS, secrets, deleting the old provider only after verifying Liara).
 3. Offer automatic deploys from GitHub when the project is on GitHub (`github_autodeploy`, see the liara-assistant skill).
 
 ## Re-deploys
 
-If liara.json exists and the app is on Liara, "deploy" means: quick scan for env keys Liara lacks, `deploy`, `verify_app`. Don't redo provisioning; it goes to the account in liara.json unless the user asks otherwise.
+If liara.json exists and the app is on Liara, "deploy" means: quick scan for env keys Liara lacks, `live_progress`, `deploy`, `verify_app`, and the fixing rules of step 7. Don't redo provisioning; it goes to the account in liara.json unless the user asks otherwise.

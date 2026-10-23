@@ -138,9 +138,22 @@ export function startMock() {
         return send(200, { sourceID: id('src') });
       }
       if ((mm = p.match(/^\/v2\/projects\/([^/]+)\/releases$/)) && m === 'POST') {
+        // Test switches: germanyDown refuses German builds; germanySilent fails them with no
+        // build output; buildTimeout makes the next build run out of time.
+        if (state.germanyDown && body.build?.location === 'germany') return send(503, { message: 'Build location germany is not available right now.' });
         const rid = id('rel');
-        state.releases[mm[1]] = [{ _id: rid, state: 'READY', port: body.port, type: body.type, body, createdAt: 'now', finishedAt: 'now' }, ...(state.releases[mm[1]] || [])];
+        let st = 'READY';
+        if (state.germanySilent && body.build?.location === 'germany') { st = 'FAILED'; state.buildLogs = { ...state.buildLogs, [rid]: [] }; }
+        if (state.buildTimeout) { st = 'TIMEOUT'; state.buildTimeout = false; state.buildLogs = { ...state.buildLogs, [rid]: ['npm ci', 'Build timed out after 5 minutes'] }; }
+        state.releases[mm[1]] = [{ _id: rid, state: st, port: body.port, type: body.type, body, createdAt: 'now', finishedAt: 'now' }, ...(state.releases[mm[1]] || [])];
         return send(200, { releaseID: rid });
+      }
+      if ((mm = p.match(/^\/v1\/projects\/([^/]+)\/resize$/)) && m === 'POST') {
+        const proj = state.projects[mm[1]];
+        if (!proj) return send(404, { message: 'App does not exists.' });
+        proj.planID = body.planID;
+        if (body.bundlePlanID) proj.bundlePlanID = body.bundlePlanID;
+        return send(200, {});
       }
       if ((mm = p.match(/^\/v1\/projects\/([^/]+)\/releases$/)) && m === 'GET') {
         const list = state.releases[mm[1]] || [];

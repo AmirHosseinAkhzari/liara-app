@@ -5,6 +5,33 @@
 import { priceOf, DOCS } from './pricing.mjs';
 
 export const CONSOLE_BILLING = 'https://console.liara.ir/';
+export const TOP_UP_DOCS = 'https://docs.liara.ir/references/console/increase-credit/';
+// Ready-made choices offered when the balance is low; any other number of days works too.
+export const TOP_UP_DAYS = [10, 30];
+
+// The balance is "low" when it is under the account's own low-credit alert amount, or
+// lasts fewer days than this at the current spend.
+export const lowBalanceDays = () => {
+  const n = Number(process.env.LIARA_LOW_BALANCE_DAYS ?? 10);
+  return Number.isFinite(n) && n >= 0 ? n : 10;
+};
+
+export function isLowBalance({ balanceToman, minCreditAmount, dailyToman }) {
+  if (typeof balanceToman !== 'number') return false;
+  if (balanceToman <= 0) return true;
+  if (typeof minCreditAmount === 'number' && minCreditAmount > 0 && balanceToman < minCreditAmount) return true;
+  return dailyToman > 0 && balanceToman / dailyToman < lowBalanceDays();
+}
+
+// How much credit keeps today's resources running for `days` more days. Liara charges by the
+// hour, so a day costs monthly / 30. The console's top-up field takes Rial (1 Toman = 10 Rial).
+export function topUpQuote({ balanceToman, dailyToman, days }) {
+  const d = Math.round(Number(days));
+  if (!Number.isFinite(d) || d < 1 || d > 3650) throw new Error('days must be a whole number from 1 to 3650.');
+  const costToman = Math.ceil((dailyToman || 0) * d);
+  const addToman = Math.max(0, costToman - Math.max(0, balanceToman || 0));
+  return { days: d, costToman, addToman, addRial: addToman * 10, balanceCovers: addToman === 0 };
+}
 
 // Balance of the account calls go to (team balance from /v1/me, personal from /v1/billing).
 export async function accountBalance(api) {
@@ -16,7 +43,7 @@ export async function accountBalance(api) {
   return { balanceToman: u.balance ?? null, minCreditAmount: u.minCreditAmount ?? null };
 }
 
-export async function billingOverview(api) {
+export async function billingOverview(api, { days } = {}) {
   const inTeam = Boolean(api.auth.teamID);
   // /v1/billing always answers for the user's own account (it ignores teamID); a team's
   // balance is in /v1/me?teamID=… → team.
@@ -66,13 +93,29 @@ export async function billingOverview(api) {
   }
   const total = lines.reduce((s, l) => s + (l.monthlyToman || 0), 0);
   const daily = total / 30;
+  const balance = account.balanceToman;
+  const lasts = typeof balance === 'number' && daily > 0 ? Math.max(0, Math.floor(balance / daily)) : null;
+  const low = isLowBalance({ balanceToman: balance, minCreditAmount: account.minCreditAmount, dailyToman: daily });
+  const custom = days !== undefined && days !== null;
+  const wanted = custom ? [Number(days)] : low ? TOP_UP_DAYS : [];
+  const topUp = typeof balance === 'number' && wanted.length ? {
+    quotes: wanted.map((d) => topUpQuote({ balanceToman: balance, dailyToman: daily, days: d })),
+    ...(custom ? {} : { customDays: 'Any other number of days: call billing again with days.' }),
+    howToPay: `Liara console → profile → «افزایش اعتبار» (add credit): type the amount in Rial (addRial), then pay. ${CONSOLE_BILLING}`,
+    docs: TOP_UP_DOCS,
+    note: 'Estimate at the current daily spend (monthly plan prices / 30), without taxes, AI usage or traffic. The plugin never pays or adds credit.',
+  } : null;
   return {
     account,
     resources: lines,
     estimatedMonthlyToman: total,
+    estimatedDailyToman: Math.round(daily),
     estimateComplete: unknown.length === 0,
     priceGaps: unknown,
-    ...(account.balanceToman != null && daily > 0 ? { balanceLastsAboutDays: Math.floor(account.balanceToman / daily) } : {}),
+    ...(lasts !== null ? { balanceLastsAboutDays: lasts, balanceRunsOutAround: new Date(Date.now() + (Math.max(0, balance) / daily) * 86_400_000).toISOString().slice(0, 10) } : {}),
+    lowBalance: low,
+    ...(low ? { askUser: 'The balance is low. Ask the user with buttons how long the services should keep running: 10 days, 30 days, or a number of days they choose. Then show the amount to add in Toman and Rial (billing {days} for a custom number) and the console link.' } : {}),
+    ...(topUp ? { topUp } : {}),
     worthChecking: checks,
     notAvailableViaApi: ['invoices and payment history', 'actual charges so far this month', 'adding credit or paying'],
     console: CONSOLE_BILLING,

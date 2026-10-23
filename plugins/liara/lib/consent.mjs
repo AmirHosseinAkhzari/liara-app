@@ -73,8 +73,16 @@ function takeToken(tool, args) {
   return true;
 }
 
-// Plain text for the dialog. c = consent description from the tool.
+// Plain text for the dialog. c = consent description from the tool. c.short (a whole plan in
+// one line: how many services, what they cost a day) replaces the long form; the full list
+// stays in c.details for "Review details".
 export function consentText(c) {
+  if (c.short) {
+    const lines = [c.short];
+    if (c.warning) lines.push(c.warning);
+    if (c.typedConfirm) lines.push(`To confirm, type: ${c.typedConfirm}`);
+    return lines.join('\n');
+  }
   const lines = [c.title, ''];
   const row = (label, value) => value && lines.push(`${label}: ${value}`);
   row('Account', c.account);

@@ -53,6 +53,50 @@ test('billing: personal balance, estimated spend, runway; never contact details'
   assert.ok(b.notAvailableViaApi.includes('invoices and payment history'));
 });
 
+test('billing: a low balance comes with top-up quotes for 10 and 30 days, any number on request', async () => {
+  const before = mock.state.balance;
+  mock.state.balance = 20_000;
+  try {
+    const b = await call('billing', {});
+    const daily = b.estimatedMonthlyToman / 30;
+    assert.ok(daily > 0);
+    assert.equal(b.lowBalance, true);
+    assert.match(b.askUser, /10 days, 30 days/);
+    assert.deepEqual(b.topUp.quotes.map((q) => q.days), [10, 30]);
+    const q10 = b.topUp.quotes[0];
+    assert.equal(q10.costToman, Math.ceil(daily * 10));
+    assert.equal(q10.addToman, q10.costToman - 20_000);
+    assert.equal(q10.addRial, q10.addToman * 10, 'the console takes Rial');
+    assert.match(b.topUp.howToPay, /Rial/);
+    assert.match(b.topUp.note, /never pays/);
+    const custom = await call('billing', { days: 45 });
+    assert.deepEqual(custom.topUp.quotes.map((q) => [q.days, q.costToman]), [[45, Math.ceil(daily * 45)]]);
+    await assert.rejects(call('billing', { days: 0 }), /days must be a whole number from 1 to 3650/);
+  } finally {
+    mock.state.balance = before;
+  }
+  const ok = await call('billing', {});
+  assert.equal(ok.lowBalance, false);
+  assert.equal(ok.topUp, undefined, 'no quotes unless low or asked');
+  assert.ok(ok.balanceRunsOutAround);
+});
+
+test('low balance: under the account alert amount, or fewer days than LIARA_LOW_BALANCE_DAYS', async () => {
+  const { isLowBalance, topUpQuote } = await import('../lib/billing.mjs');
+  assert.equal(isLowBalance({ balanceToman: 40_000, minCreditAmount: 50_000, dailyToman: 100 }), true);
+  assert.equal(isLowBalance({ balanceToman: 900, minCreditAmount: 0, dailyToman: 100 }), true, '9 days < 10');
+  assert.equal(isLowBalance({ balanceToman: 1_100, minCreditAmount: 0, dailyToman: 100 }), false, '11 days');
+  assert.equal(isLowBalance({ balanceToman: 0, dailyToman: 0 }), true);
+  assert.equal(isLowBalance({ balanceToman: null, dailyToman: 100 }), false, 'unknown is not low');
+  process.env.LIARA_LOW_BALANCE_DAYS = '30';
+  try {
+    assert.equal(isLowBalance({ balanceToman: 1_100, minCreditAmount: 0, dailyToman: 100 }), true, '11 days < 30');
+  } finally {
+    delete process.env.LIARA_LOW_BALANCE_DAYS;
+  }
+  assert.deepEqual(topUpQuote({ balanceToman: 5_000, dailyToman: 100, days: 30 }), { days: 30, costToman: 3_000, addToman: 0, addRial: 0, balanceCovers: true });
+});
+
 test('billing in a team shows the team balance, not the personal one', async () => {
   const b = await call('billing', { team: 'تیم ۲' });
   assert.equal(b.account.type, 'team');
