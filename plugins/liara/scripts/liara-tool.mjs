@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Run any plugin tool from the shell, e.g.
-//   node bin/liara-tool.mjs scan_project '{"path":"."}'
-//   node bin/liara-tool.mjs deploy '{"app":"my-app","planID":"..."}'
+//   node scripts/liara-tool.mjs scan_project '{"path":"."}'
+//   node scripts/liara-tool.mjs deploy '{"app":"my-app","planID":"..."}'
 import { TOOLS, callTool } from '../lib/tools.mjs';
 
 const [name, json] = process.argv.slice(2);

@@ -1,7 +1,7 @@
 {
   "name": "liara",
   "displayName": "Liara",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Liara cloud assistant: analyze a project, deploy it with live prices and one approval, connect Liara databases, storage, mail, DNS and AI, verify with real checks, diagnose failures, manage VPS, check billing and Liara status, search the official docs, set up GitHub auto-deploy, and write a static HTML report.",
   "author": {
     "name": "AmirHossein Akhzari",
@@ -10,6 +10,10 @@
   "homepage": "https://github.com/AmirHosseinAkhzari/liara-app/tree/main/plugins/liara#readme",
   "repository": "https://github.com/AmirHosseinAkhzari/liara-app",
   "license": "MIT",
+  "icon": "./assets/icon.png",
+  "documentationUrl": "https://github.com/AmirHosseinAkhzari/liara-app/tree/main/plugins/liara#readme",
+  "supportUrl": "https://github.com/AmirHosseinAkhzari/liara-app/issues",
+  "privacyPolicyUrl": "https://github.com/AmirHosseinAkhzari/liara-app/blob/main/plugins/liara/PRIVACY.md",
   "keywords": [
     "ai",
     "billing",
