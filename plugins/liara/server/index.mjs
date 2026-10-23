@@ -5,7 +5,7 @@
 import readline from 'node:readline';
 import { TOOLS, callTool, toolRisk } from '../lib/tools.mjs';
 
-const SERVER = { name: 'liara', version: '0.8.1' };
+const SERVER = { name: 'liara', version: '0.8.2' };
 const SUPPORTED = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const DIALOG_TIMEOUT_MS = 10 * 60_000;
 

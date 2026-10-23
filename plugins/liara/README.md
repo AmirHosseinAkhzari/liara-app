@@ -2,6 +2,8 @@
 
 A Liara cloud assistant inside Claude. Say **"deploy this to Liara"** (or run `/liara:deploy`) in any project, or ask about prices, billing, a VPS, the docs, or whether Liara is down. The plugin calls Liara's official APIs, asks before anything that changes your account or costs money, verifies real outcomes, and writes a report of what it did.
 
+> Community plugin by AmirHossein Akhzari. It is not made or endorsed by Liara. See [PRIVACY.md](PRIVACY.md) for what data it sends and where.
+
 ## What it does
 
 | Area | What you get |
@@ -84,7 +86,7 @@ Ask first: `approve_plan`, `create_app`, `change_app_plan`, `deploy`, `deploy_se
 `set_cron` writes liara.json only (the deploy applies it). `live_progress` opens the local live page; `ask` puts a choice in Claude and on that page. `login` opens the browser. Run any tool from a shell (no dialogs there; changes return `confirmationRequired`):
 
 ```bash
-node plugins/liara/bin/liara-tool.mjs scan_project '{"path":"."}'
+node plugins/liara/scripts/liara-tool.mjs scan_project '{"path":"."}'
 ```
 
 ## What Liara's API does not offer (handled honestly)
