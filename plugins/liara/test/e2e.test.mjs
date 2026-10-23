@@ -47,7 +47,7 @@ test('scan finds every service and never returns secret values', async () => {
   for (const s of r.services) assert.equal(s.recommendation, 'ask-to-migrate', s.id);
   assert.equal(r.platform, 'next');
   const text = JSON.stringify(r);
-  for (const secret of ['secretpw', 'sk-proj-realkeyvalue123', 'supersecret', 'sk_live_abc', 're_123456']) assert.ok(!text.includes(secret), secret);
+  for (const secret of ['EXAMPLE_PASSWORD', 'sk-proj-EXAMPLE', 'EXAMPLE_SECRET_KEY', 'sk_live_EXAMPLE', 're_EXAMPLE']) assert.ok(!text.includes(secret), secret);
   assert.ok(r.otherApis.some((o) => o.name === 'Stripe'));
 });
 
@@ -77,7 +77,7 @@ test('create app, connect services, copy secrets, deploy', async () => {
 
   const sec = await callTool('set_envs', { app, path: workdir, fromEnvFile: '.env.production', keys: ['STRIPE_SECRET_KEY', 'NEXTAUTH_SECRET', 'NEXT_PUBLIC_SITE_URL'] });
   assert.deepEqual(Object.keys(sec.changed).sort(), ['NEXTAUTH_SECRET', 'NEXT_PUBLIC_SITE_URL', 'STRIPE_SECRET_KEY']);
-  assert.ok(!JSON.stringify(sec).includes('sk_live_abc'));
+  assert.ok(!JSON.stringify(sec).includes('sk_live_EXAMPLE'));
 
   // Real values reached Liara, earlier services were kept (merge, not replace).
   const envs = Object.fromEntries(mock.state.projects[app].envs.map((e) => [e.key, e.value]));
@@ -85,7 +85,7 @@ test('create app, connect services, copy secrets, deploy', async () => {
   assert.equal(envs.S3_SECRET_ACCESS_KEY, 'liara-secret-123');
   assert.equal(envs.OPENAI_API_KEY, 'liara-ai-key-abcdef');
   assert.equal(envs.SMTP_PASSWORD, 'smtp-pass-xyz');
-  assert.equal(envs.STRIPE_SECRET_KEY, 'sk_live_abc');
+  assert.equal(envs.STRIPE_SECRET_KEY, 'sk_live_EXAMPLE');
 
   const masked = await callTool('get_envs', { app });
   assert.ok(!JSON.stringify(masked).includes('liara-secret-123'));
